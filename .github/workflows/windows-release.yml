@@ -1,0 +1,120 @@
+name: windows-release
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+        default: 'master'
+      inputs_tag:
+        type: string
+        default: 'inputs-ddf5f04'
+      release_tag:
+        type: string
+        default: ''
+permissions:
+  contents: write
+env:
+  GH_TOKEN: ${{ github.token }}
+  GIT_TERMINAL_PROMPT: '0'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref }}
+      INPUTS_TAG: ${{ inputs.inputs_tag }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Checkout the ref
+        run: git clone -q --no-checkout "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" . ; git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" ; git checkout -q "$REF" ; git rev-parse HEAD
+      # The recompiled game sources (RecompiledFuncs/) were generated from the owner's ROM elsewhere and
+      # are an asset of a private release of this repo, so no ROM is needed here.
+      - name: Download and unpack the build inputs
+        shell: pwsh
+        run: |
+          gh release download $env:INPUTS_TAG --repo $env:GITHUB_REPOSITORY --pattern 'RecompiledFuncs-*.zip' --dir inputs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Expand-Archive -Path (Get-ChildItem inputs\RecompiledFuncs-*.zip).FullName -DestinationPath . -Force
+          if (-not (Test-Path RecompiledFuncs\inputs.sha256)) {
+            Write-Host "::error::RecompiledFuncs/inputs.sha256 is missing from the inputs zip"
+            exit 1
+          }
+          Remove-Item -Recurse -Force inputs
+      # What build.cmd does: the tools' submodules, then each tool's patch (RmlUi after RecompFrontend).
+      - name: Submodules and patches
+        run: |
+          git submodule update --init --recursive
+          apply() {
+            git -C "$1" apply "$GITHUB_WORKSPACE/$2" || { echo "::error::couldn't apply $2 to $1"; exit 1; }
+            echo "patched $1"
+          }
+          apply tools/N64Recomp recomp/n64recomp.patch
+          apply tools/N64ModernRuntime recomp/n64modernruntime.patch
+          apply tools/rt64 recomp/rt64.patch
+          apply tools/RecompFrontend recomp/recompfrontend.patch
+          apply tools/RecompFrontend/recompui/lib/RmlUi recomp/rmlui.patch
+      - name: Build
+        shell: cmd
+        run: |
+          set VCPKG_ROOT=%VCPKG_INSTALLATION_ROOT%
+          set CONKER_CMAKE_ARGS=-DCONKER_NETPLAY=ON
+          call host\build_windows.cmd
+      - name: Check the build id
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("host\build-win\ConkerRecomp.exe")
+          $string = [System.Text.Encoding]::GetEncoding("iso-8859-1").GetString($bytes)
+          if ($string -notmatch '0\.1\.6 [0-9a-f]{40}(-dirty-[0-9a-f]+)?') {
+            [Console]::Out.WriteLine("::error::No build id found in ConkerRecomp.exe")
+            exit 1
+          }
+          $build_id = $matches[0]
+          [Console]::Out.WriteLine($build_id)
+          if ($build_id -match '-dirty-') {
+            [Console]::Out.WriteLine("::error::Dirty build detected")
+            exit 1
+          }
+          $build_hex = [Regex]::Match($build_id, '[0-9a-f]{40}').Value
+          $head = (git rev-parse HEAD).Trim()
+          if ($build_hex -ne $head) {
+            [Console]::Out.WriteLine("::error::Build id mismatch: $build_hex != $head")
+            exit 1
+          }
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = 'package\ConkerRecompiled'
+          New-Item -ItemType Directory -Path $out
+          Copy-Item "host\build-win\ConkerRecomp.exe" -Destination $out
+          Copy-Item "host\build-win\SDL2.dll" -Destination $out
+          Copy-Item "host\build-win\dxcompiler.dll" -Destination $out
+          Copy-Item "host\build-win\dxil.dll" -Destination $out
+          Copy-Item ".github\release\README.txt" -Destination $out
+          Copy-Item "LICENSE" -Destination $out
+          Copy-Item ".github\release\LICENSES.txt" -Destination $out
+          Copy-Item "tools\N64ModernRuntime\COPYING" -Destination "$out\LICENSE-GPL-3.0.txt"
+          Copy-Item "host\build-win\assets" -Destination "$out\assets" -Recurse
+          $tag = $env:RELEASE_TAG -ne '' ? $env:RELEASE_TAG : (git rev-parse HEAD).Trim().Substring(0,7)
+          Compress-Archive -Path $out -DestinationPath "package\ConkerRecompiled-$tag-Windows.zip" -Force
+          $files = Get-ChildItem -Path $out -Recurse
+          foreach ($file in $files) {
+            if ($file.Name -like "*.z64" -or $file.Name -like "*.n64" -or $file.Name -like "*.v64" -or $file.Name -like "baserom*" -or $file.Directory.Name -eq "conker_data") {
+              Write-Host "::error::Disallowed file in package: $file"
+              exit 1
+            }
+          }
+          Get-FileHash -Path "package\ConkerRecompiled-$tag-Windows.zip" -Algorithm SHA256
+      - name: Upload to release
+        if: ${{ inputs.release_tag != '' }}
+        run: gh release upload "$RELEASE_TAG" package/*.zip --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Upload workflow artifact
+        if: ${{ inputs.release_tag == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: package/*.zip
+          retention-days: 7
