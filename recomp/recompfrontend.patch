@@ -739,3 +739,98 @@ index 2c5dc52..9b175f4 100644
      set_as_navigation_container(NavigationType::Horizontal);
  }
  
+diff --git a/recompui/src/util/file.cpp b/recompui/src/util/file.cpp
+index 7ee84ed..c27b56e 100644
+--- a/recompui/src/util/file.cpp
++++ b/recompui/src/util/file.cpp
+@@ -9,6 +9,9 @@
+ #include <filesystem>
+ #include <fstream>
+ #include <iomanip>
++#include <chrono>
++#include <mutex>
++#include <ctime>
+ 
+ #if defined(_WIN32)
+ #include <Shlobj.h>
+@@ -128,13 +131,76 @@ namespace recompui {
+         return file::get_program_path() / "assets" / asset;
+     }
+ 
++    namespace {
++        std::mutex dialog_mutex;
++        bool dialog_busy = false;
++        std::chrono::steady_clock::time_point dialog_closed_at{};
++
++        static void dialog_log(const std::string& line) {
++            try {
++                auto now = std::chrono::system_clock::now();
++                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
++
++                std::time_t t = std::chrono::system_clock::to_time_t(now);
++                std::tm tm{};
++#if defined(_WIN32)
++                localtime_s(&tm, &t);
++#else
++                localtime_r(&t, &tm);
++#endif
++
++                auto path = file::get_app_folder_path() / "dialog.log";
++                std::error_code ec;
++                std::filesystem::create_directories(path.parent_path(), ec);
++
++                std::ofstream log_file(path, std::ios::app);
++                if (log_file.is_open()) {
++                    log_file << std::put_time(&tm, "%H:%M:%S.") << std::setw(3) << std::setfill('0') << ms << " " << line << '\n';
++                }
++            } catch (...) {
++                // Ignore errors
++            }
++        }
++    }
++
+     void file::open_file_dialog(std::function<void(bool success, const std::filesystem::path& path)> callback) {
++        std::unique_lock<std::mutex> lock(dialog_mutex);
++        if (dialog_busy) {
++            lock.unlock();
++            dialog_log("file dialog request ignored (busy)");
++            return;
++        }
++        if (std::chrono::steady_clock::now() - dialog_closed_at < std::chrono::milliseconds(2000)) {
++            lock.unlock();
++            dialog_log("file dialog request ignored (cool-down)");
++            return;
++        }
++        dialog_busy = true;
++        lock.unlock();
++        dialog_log("file dialog opened");
++
++        auto wrapped = [callback](bool success, const std::filesystem::path& path) {
++            if (success) {
++                dialog_log("file dialog closed: picked " + path.string());
++            } else {
++                dialog_log("file dialog closed: cancelled");
++            }
++            // However the callback ends, the dialog is free again and the cool-down starts (a callback that
++            // throws mustn't leave it busy for good).
++            struct Release {
++                ~Release() {
++                    std::lock_guard<std::mutex> guard(dialog_mutex);
++                    dialog_busy = false;
++                    dialog_closed_at = std::chrono::steady_clock::now();
++                }
++            } release;
++            callback(success, path);
++        };
++
+ #ifdef __APPLE__
+-        file::apple::dispatch_on_ui_thread([callback]() {
+-            perform_file_dialog_operation(callback);
+-        });
++        file::apple::dispatch_on_ui_thread([wrapped]() { perform_file_dialog_operation(wrapped); });
+ #else
+-        perform_file_dialog_operation(callback);
++        perform_file_dialog_operation(wrapped);
+ #endif
+     }
+ 

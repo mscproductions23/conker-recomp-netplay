@@ -314,8 +314,11 @@ namespace {
             }
             if (result != recomp::RomValidationError::Good) {
                 recompui::message_box(conker::rom_error_text(result));
+                return;
             }
-            // The launcher's update picks the new version up once it's written.
+            // The launcher's update picks the new version up once it's written. With the Version option
+            // gone from the launcher nothing else shows it, so say it was added.
+            recompui::message_box("ROM added. It's the one in play now: press Start Game.");
         });
     }
 
