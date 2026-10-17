@@ -1,84 +1,80 @@
-<img width="1360" height="768" alt="image" src="https://github.com/user-attachments/assets/abb979d7-24a5-44f8-98d3-088ba2054a74" />
+# Conker's Bad Fur Day: Recompiled, Netplay Edition
 
-# Conker's Bad Fur Day: Recompiled
+A personal fork of [sciaschi/CBFD-Recompiled](https://github.com/sciaschi/CBFD-Recompiled), the
+native PC port of **Conker's Bad Fur Day** (N64, US version) built with
+[N64Recomp](https://github.com/N64Recomp/N64Recomp), [N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime)
+and [RT64](https://github.com/rt64/rt64). This fork exists to play Conker's multiplayer **online with friends**,
+on Linux, macOS and Windows, from builds that need only each player's own ROM.
 
-A native PC port of **Conker's Bad Fur Day** (N64, US version). It's built by
-statically recompiling the game with [N64Recomp](https://github.com/N64Recomp/N64Recomp),
-starting from the [Conker decompilation](https://github.com/mkst/conker). It runs on
-[N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime) and is rendered by
-[RT64](https://github.com/rt64/rt64).
+> **This repository contains no game data.** You need your own legally obtained copy of the US ROM
+> (big-endian `.z64`, SHA-1 `4cbadd3c4e0729dec46af64ad018050eada4f47a`). It is never committed.
 
-> **This repository contains no game data.** You need your own legally obtained
-> copy of the US ROM. Everything from the game is extracted from that ROM on
-> your machine during the build.
+It's an independent fork, not affiliated with Rare, Microsoft, Nintendo or the upstream project's
+maintainers. Please report problems with it here, not upstream.
 
-## Download
+## What this fork does differently
 
-Ready-to-play Windows, Linux and macOS (Apple Silicon, macOS 15 or later) builds
-are on the [Releases page](https://github.com/sciaschi/CBFD-Recompiled/releases).
-Unpack one anywhere, run `ConkerRecomp`, and pick your US ROM in the launcher the
-first time. The packages contain no game data: you still need your own ROM. The
-macOS app isn't signed with an Apple developer ID, so the first time, open it and
-then choose **Open Anyway** in System Settings > Privacy & Security. To build it
-yourself instead, read on.
+The renderer, the recompilation, widescreen, controls and the rest of the port are upstream's. This fork
+changes the following.
 
-## Features
+| Change | Where |
+|---|---|
+| **Netplay is part of every build.** Upstream builds its online multiplayer only with `-DCONKER_NETPLAY=ON`; this fork's releases always have it. The netplay code itself (lockstep, join codes, the Netplay menu, the determinism checks) is upstream's, written by [easymod0](https://github.com/easymod0), merged here from upstream's `main`. | [`tools/netplay/README.md`](tools/netplay/README.md) |
+| **A trimmed launcher:** Start Game, Netplay, Controls, Graphics & Sound, Add ROM and Exit. The Version switch and the Mods menu are gone. | [`host/src/frontend.cpp`](host/src/frontend.cpp) |
+| **Fewer settings.** The Camera, Mouse & Gyro, Achievements and Mods tabs and the notification and texture pack settings are hidden. They are still created, so the code that reads them finds their defaults and the game behaves as before. | [`host/src/conker_config.cpp`](host/src/conker_config.cpp) |
+| **A different look:** a dark plum background with an orange accent and softer corners, set through RecompFrontend's theme. | [`host/src/launcher_theme.cpp`](host/src/launcher_theme.cpp) |
+| **Release packaging that needs no ROM in the cloud:** a portable Linux tarball, a macOS DMG, and a Windows build that compiles from stored, already-recompiled sources. | [`tools/release/`](tools/release/), [`windows-release.yml`](.github/workflows/windows-release.yml) |
+| **A manual upstream sync:** a workflow you start by hand that opens a pull request with whatever is new in upstream's `main`. It never merges anything itself. | [`sync-upstream.yml`](.github/workflows/sync-upstream.yml) |
 
-- Runs natively on Windows (Direct3D 12 or Vulkan), Linux (Vulkan) and macOS
-  (Metal), rendered by RT64. Supports higher resolutions, widescreen,
-  anti-aliasing and high frame-rate presentation, with Conker, his shadow and the
-  camera interpolated between the game's frames.
-- Widescreen across gameplay, menus, cutscenes (or 4:3 cutscenes, with the
-  **Cutscene Aspect Ratio** option), split screen and the pause screen, with the
-  world drawn and culled for the wider view. **Overscan Borders** hides the N64's
-  black border down each side.
-- Game controllers and keyboard, with remappable controls (mouse buttons too) and
-  rumble settings (motor, style and strength). N64 pads and adapters for real N64
-  controllers are built in, and each controller gets its own player in
-  multiplayer.
-- Mouse and gyro aiming, a free camera on the right stick (or the mouse) that
-  stays out of walls, camera turning speed and inversion, and a Field of View
-  setting.
-- An aiming **Reticle**, a green ring like Live & Reloaded's, and **Swap Sticks**
-  and **Lock-On** options for aiming.
-- Full audio: music, sound effects and the voice acting, each with a volume of its
-  own (Music, Sound Effects and Speech, under the Main Volume).
-- Saving (EEPROM), stored per user.
-- A launcher with settings, controls and a mod menu (RecompFrontend, as in
-  Zelda 64: Recompiled and Banjo: Recompiled).
-- The game's reflective surfaces (Conker's glass, the logo's sheen) and its point
-  lights (the bar's lantern, the N64 logo), drawn as on the N64.
-- **Conker's Detail** keeps Conker on his most detailed model, and **Show FPS**
-  puts a frame rate counter in the corner.
-- Achievements, the program's own, for reaching the game's scenes.
-- ROM hacks that only change the game's assets, such as the uncensored ROM and the
-  Russian, German and Brazilian Portuguese translations, with the launcher switching
-  between them.
-- Mod support (`.nrm` mods: function patches and hooks). Three mods are
-  included: **Skip Intro**, **Skip Any Cutscene** and **Cheats**.
-- Texture packs (RT64's `.rtz`, and GLideN64's `.htc` and `.hts`), for HD textures and
-  other replacements.
-- Save states: save anywhere with F5 and load with F7, in nine slots
-  ([how to use them, and how they work](docs/save-states.md)).
+Hidden is not removed: achievements, mods, texture packs and save states are still in the code. Mods and
+save states are switched off during a netplay match anyway, as upstream's settings profile fixes them.
+Upstream's [README](https://github.com/sciaschi/CBFD-Recompiled#readme) lists the full feature set.
 
 ## Status
 
-The game is playable, and has been played through to the end. Known issues:
+This is experimental. What has and hasn't been checked:
 
-- Widescreen: the pause menu's blurred background is the 4:3 frame scaled up to
-  the full width, so its top and bottom are cropped.
-- Only the US ROM is supported (and ROM hacks that only change its assets: see
-  [ROM hacks](#rom-hacks)).
-- Linux: the game is played on Linux with real GPU drivers, the Steam Deck
-  included, and the build is tested on Ubuntu 24.04. Reports from other
-  distributions and GPUs are welcome, especially about performance or audio.
-- macOS: the game is played on Apple Silicon with Metal (the build is tested on
-  an Apple M3 Pro with macOS 27 and Xcode 27). It hasn't been confirmed played
-  through on macOS yet, and Intel Macs haven't been tried.
+- **Checked:** upstream's determinism check and its two-copy lockstep check both pass on a Linux build of this
+  fork (headless). The Linux and macOS release builds carry the same build id, from the same clean commit.
+- **Not checked yet:** a real match between two machines over a network, the Windows build (the workflow
+  exists and is being tested), the macOS DMG, and how the new launcher looks on every platform.
+- **Limits of netplay, as upstream has it:** the host has to be reachable (the same Tailscale network, or a
+  forwarded UDP port). There is no NAT traversal and no room server. A join code is the host's address, port
+  and a match key, so give it only to people you trust. A match starts from boot with an empty save. Everyone
+  must run the **same build**: the handshake refuses a different commit, ROM, settings profile or mods.
+- **Not built:** short room codes with a room server, an in-launcher update check, and an Apple TV port.
+  They are plans, not features.
 
-If the game crashes on Windows, a report is written to `crash.log` next to the
-executable and shown in a message box. On Linux and macOS, the crash report is printed
-to the terminal. Please include it when reporting a problem.
+## Playing online
+
+1. Every player gets the same release (or builds the same commit) and loads their own US ROM in the launcher
+   the first time.
+2. The host opens **Netplay**, picks the number of players, the port and the address friends will use (a
+   Tailscale address works without port forwarding), and copies the join code.
+3. The others open **Netplay**, paste the code to join, and the game starts on every machine once all are in.
+
+Each player uses their first controller. Mouse and gyro aiming, and the free camera, are switched off during a
+match so every machine runs the same game.
+
+## Getting a build
+
+Releases are on this repository's Releases page: `ConkerRecompiled-<tag>-Linux.tar.gz` (run `ConkerRecomp`
+inside it; it needs Vulkan, SDL2, GTK 3 and FreeType from the system, and carries protobuf and libcrypto
+itself), a macOS `.dmg` (Apple Silicon, macOS 15 or later; it isn't notarised, so the first time choose
+**Open Anyway** in System Settings > Privacy & Security), and a Windows `.zip`. The packages contain no game
+data. To build it yourself, follow the guides below, with netplay on: set `CONKER_CMAKE_ARGS=-DCONKER_NETPLAY=ON`
+before `build.sh` or `build.cmd`.
+
+## For the maintainer
+
+- A release is built from one clean, committed commit on every platform; the build id includes the commit and
+  marks uncommitted changes `-dirty-`, and netplay refuses mismatched builds.
+- `tools/release/package_linux.sh` and `tools/release/package_macos_dmg.sh` package a finished build. The
+  Windows workflow builds from a `RecompiledFuncs-*.zip` asset of a release in this repository. **That asset
+  is derived from a ROM. Keep the repository private while it exists, and delete it first if you ever make
+  the repository public.**
+- The workflows inherited from upstream (`build`, `netplay`, `netplay-transport`, `release`) expect upstream's
+  secrets and public clones, so they skip or fail here.
 
 ## What you need to build it
 
@@ -303,6 +299,9 @@ folder (64 MB apiece). Saves are shared between them.
 
 ## Mods
 
+> **In this fork** the Mods menu is hidden from the launcher, and mods are switched off during a netplay
+> match. This section is upstream's, for building the code.
+
 Mods are `.nrm` files. Install one by copying it into the `mods` folder of the
 data folder above (or dropping it onto the Mods menu), then enable it in the
 **Mods** menu. Some mods have options there too.
@@ -394,6 +393,10 @@ it to `.rtz` to share it.
 
 ## AI assistance
 
+This fork's own changes (the launcher, the theme, the release scripts and workflows, and this README) were
+made with Claude through Claude Code, with some scripts first drafted by local models and then read and
+checked. The paragraphs below are upstream's, about the upstream project.
+
 This project was made with heavy use of an AI coding assistant (Claude, through
 Claude Code). That covers the recompilation setup, the patches to the tools, the
 host application, the mods, and the functions decompiled to C in this repository.
@@ -422,6 +425,8 @@ Bug reports, fixes and patches are welcome: see [CONTRIBUTING.md](CONTRIBUTING.m
 
 ## Credits
 
+- [sciaschi/CBFD-Recompiled](https://github.com/sciaschi/CBFD-Recompiled) and its contributors, whose port this
+  fork is made from, and [easymod0](https://github.com/easymod0), who wrote the netplay it builds on.
 - The [Conker's Bad Fur Day decompilation](https://github.com/mkst/conker) project,
   whose work this is built on.
 - The macOS port, and support for ROM hacks, by
