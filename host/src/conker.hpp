@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -36,6 +37,9 @@ namespace conker {
         void update(uint8_t* rdram);
         // conker_config.cpp: whether the setting is 4:3.
         bool in_4x3();
+        // For save states (host_state.cpp): where the ring of its display lists is.
+        uint32_t dl_ring();
+        void set_dl_ring(uint32_t slot);
     }
 
     // rom_versions.cpp: the ROMs the game accepts, and the versions of them kept for the
@@ -66,6 +70,51 @@ namespace conker {
     // null_renderer.cpp
     std::unique_ptr<ultramodern::renderer::RendererContext> create_null_renderer(
         uint8_t* rdram, ultramodern::renderer::WindowHandle window_handle, bool developer_mode);
+
+    // netplay/profile.cpp: the netplay settings profile. While it's active (the harness is
+    // used), the settings that change the game or its memory are fixed: each reader checks it.
+    namespace netplay_profile {
+#if defined(CONKER_NETPLAY)
+        bool active();
+        void set_active(bool active);
+        // XXH3-64 of the profile's description, for recordings.
+        uint64_t hash();
+        // Whether no mods but texture packs are on, for recordings and replays (false: each was printed).
+        bool check_mods();
+        // A hash of the mods on but texture packs, in load order: each one's id, version, file and saved
+        // settings (0 for none), for netplay's handshake: everyone in a match needs the same.
+        uint64_t mods_hash();
+#else
+        inline bool active() { return false; }
+#endif
+        // How much wider than 4:3 the culls and sprites are widened in it, whatever the window: 16:9's.
+        inline constexpr float widescreen_ratio = (16.0f / 9.0f) / (4.0f / 3.0f);
+    }
+
+#if defined(CONKER_NETPLAY)
+    // The determinism harness (netplay/harness.cpp): records and replays the game's inputs, and logs a
+    // hash of its memory at each controller read.
+    namespace harness {
+        // A command line option of the harness's, taking its value too (true if it was one).
+        bool parse_option(int argc, char** argv, int& i);
+        // Checks the options and opens the files, before the game starts (false: a message was printed).
+        bool prepare();
+        // Recording, replaying or hashing.
+        bool active();
+        // The game's entrypoint: while active, it starts from an empty save.
+        void entrypoint(uint8_t* rdram, recomp_context* ctx);
+        // A netplay match connected from the menu (lockstep.hpp) is about to start: the harness is used
+        // for it, and says the match is over with `on_match_over` (why, for the player; on the game
+        // thread) instead of quitting.
+        void begin_menu_match(std::function<void(const std::string&)> on_match_over);
+        void start(uint8_t* rdram);
+        void finish();
+        bool replaying();
+        // While recording, replaying or hashing, the game sees fixed controllers (--ports, no paks).
+        bool fixes_ports();
+        ultramodern::input::connected_device_info_t connected_device_info(int controller_num);
+    }
+#endif
 
 #if defined(CONKER_RT64)
     inline constexpr const char* program_name = "Conker's Bad Fur Day: Recompiled";
@@ -108,12 +157,19 @@ namespace conker {
         void update_unpacking();
         // gliden64_packs.cpp: the mod id of the pack a .htc unpacks into.
         std::string gliden64_pack_id(const std::filesystem::path& htc);
+        // The Hotkeys (frontend.cpp): Texture Pack On/Off, switching between the texture packs and the game's own
+        // textures (F8 by default).
+        void toggle_originals();
+        // On the General tab (conker_config.cpp): Texture Pack Notifications, the F8 line.
+        void add_notification_options(recomp::config::Config& config);
         // The Texture Pack setting, at the end of the Graphics tab, listing the packs in the mods
         // folder (a .htc as the pack it unpacks into).
         void add_options(recomp::config::Config& config);
         // Turns on the pack chosen in the settings and the others off (unless it's left to the
         // Mods menu). Needs the runtime to have opened the mods.
         void apply();
+        // Whether a mod (by its id) is a texture pack in the mods folder.
+        bool is_pack(const std::string& mod_id);
     }
 
     // rumble.cpp: the Rumble Pak, sent to each port's controller.
@@ -169,6 +225,18 @@ namespace conker {
     // no menus). Their readers fall back to the defaults without them.
     bool graphics_config_ready();
 
+    // conker_config.cpp: General's Start Game Directly (issue #133), read from the General tab's saved file
+    // (main asks before the tabs exist).
+    bool start_game_directly();
+
+    // sound_volumes.cpp: the Sound tab's Music, Sound Effects and Speech volumes.
+    namespace sound_volumes {
+        // conker_config.cpp: the options, on the Sound tab.
+        void add_options(recomp::config::Config& config);
+        // From the game thread, as the game starts a frame's display list: the volumes are read from the settings.
+        void game_frame(uint8_t* rdram);
+    }
+
     // Graphics: Overscan Borders (conker_config.cpp; the crop is set in widescreen.cpp).
     namespace overscan_borders {
         // Hidden: the picture is zoomed so the game's black border at its sides is off the screen.
@@ -185,12 +253,19 @@ namespace conker {
     namespace shadows {
         // From the game thread, as the game starts a frame's display list.
         void game_frame();
+        // For save states (host_state.cpp): the game frames so far and when each shadow was last drawn.
+        std::vector<uint32_t> drawn();
+        void set_drawn(const std::vector<uint32_t>& words);
     }
 
-    // reticle.cpp: Aiming: Reticle, a ring in the middle of the screen while aiming (issue #74).
+    // reticle.cpp: Aiming: Reticle, a ring, crosshair or dot in the middle of the screen while aiming (issues #74, #124).
     namespace reticle {
-        // look_aim.cpp: whether the setting is on.
-        bool enabled();
+        // Aiming: Reticle (Ring has the key and value the setting's On had) and Aiming: Reticle Size.
+        enum class Style : uint32_t { Ring, Off, Crosshair, Dot };
+        enum class Size : uint32_t { Small, Medium, Large };
+        // look_aim.cpp: the settings.
+        Style style();
+        Size size();
         // From the game thread, each frame a camera aims in the second aiming mode (conker_aim_stick,
         // $s0 the camera state): player 1's shows the reticle, unless zoomed in or in split screen.
         void aim_frame(uint8_t* rdram, gpr camera);
@@ -207,8 +282,10 @@ namespace conker {
     namespace local_achievements {
         // At start (frontend.cpp, once the config folder is known): reads the unlocks so far.
         void init();
-        // With the other settings tabs (conker_config.cpp): the Achievements tab.
+        // With the other settings tabs (conker_config.cpp): the Achievements tab, and on the General tab,
+        // Achievement Notifications (issue #128).
         void add_tab();
+        void add_options(recomp::config::Config& config);
         // From the game thread, as the game starts a frame's display list: unlocks what the save has reached.
         void game_frame(uint8_t* rdram);
         // Save states (save_states.cpp), as one is loaded: the scenes it has are put back with the game's memory,
@@ -216,22 +293,79 @@ namespace conker {
         void state_loaded();
     }
 
+#if defined(CONKER_RT64) && defined(CONKER_NETPLAY)
+    // netplay/menu.cpp: the launcher's Netplay menu: host or join a match.
+    namespace netplay_menu {
+        // The game to start, and where its ROM is stored (to hash it before the game loads it).
+        void init(const std::u8string& game_id, const std::filesystem::path& stored_rom);
+        // Opens the menu (the launcher's Netplay option).
+        void open();
+        // On the main thread (update_gfx): says when a match is over.
+        void update();
+    }
+
+    // netplay/view.cpp: "my view only", the window showing only this player's part of the split screen.
+    namespace netplay_view {
+        void set_mine_only(bool on);
+        bool is_mine_only();
+        // At the start of each game frame's display list (widescreen.cpp's conker_frame_dl_begin).
+        void game_frame(uint8_t* rdram);
+    }
+#endif
+
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
     // "State saved"...).
     namespace notices {
         // From any thread. With replace, it's shown at once in place of what's shown (and of an earlier one to
         // replace), as a save state's slot is as F6 is pressed again and again.
         void show(const std::string& text, bool replace = false);
+        // A line saying something couldn't be done: shown whatever the notification settings are.
+        void show_failure(const std::string& text);
+        // On the General tab (conker_config.cpp): Notifications, all of them on or off.
+        void add_options(recomp::config::Config& config);
         // From the launcher's init (frontend.cpp): recompui's UI exists now, so the line's context can be made.
         void on_ui_ready();
         // On the main thread (update_gfx): shows the waiting lines, one at a time, once the game has started.
         void update();
     }
 
+    // host_state.cpp: what the host keeps outside game memory that decides what it writes into it, so a
+    // save state holds it too (save_states.cpp, the harness) and a load goes on as the state did: the
+    // song marks (ultra_extras.cpp), where our display lists' rings are (widescreen.cpp,
+    // cutscene_aspect.cpp), when each shadow was last drawn (interpolation.cpp), and the sound buffers
+    // still playing on the timeline (audio_clock.cpp).
+    namespace host_state {
+        std::vector<uint8_t> save();
+        // Empty, or cut short (a state from before it was held): what's missing starts afresh.
+        void load(const std::vector<uint8_t>& bytes);
+    }
+    // Parts of it (the others are with their modules' functions above), as 32-bit words.
+    // audio_clock.cpp: in deterministic mode the game's sound buffers play on the timeline, not on the
+    // sound device's pace. wrap gives the callbacks to register in place of the device's.
+    namespace audio_clock {
+        ultramodern::audio_callbacks_t wrap(const ultramodern::audio_callbacks_t& device);
+        std::vector<uint32_t> state();
+        void set_state(const std::vector<uint32_t>& words);
+    }
+    namespace songs {
+        std::vector<uint32_t> marks();
+        void set_marks(const std::vector<uint32_t>& words);
+    }
+    namespace widescreen {
+        uint32_t dl_ring();
+        void set_dl_ring(uint32_t offset);
+    }
+
     // save_states.cpp: save states (issue #94), F5 to save, F7 to load, F6 for the next slot.
     namespace save_states {
-        // At start (frontend.cpp): the keys, and the runtime's idle moment that states are taken at.
+        // At start (frontend.cpp): the runtime's idle moment that states are taken at.
         void init();
+        // The Hotkeys (frontend.cpp): Save State, Load State and Next Save State Slot.
+        void save();
+        void load();
+        void next_slot();
+        // On the General tab (conker_config.cpp): Save State Notifications (issue #133).
+        void add_options(recomp::config::Config& config);
     }
 
     // fps_counter.cpp: Show FPS, the frame rate counter.

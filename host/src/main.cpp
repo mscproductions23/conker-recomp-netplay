@@ -4,7 +4,7 @@
 // remappable keyboard/controller input (frontend.cpp) and plays sound
 // (audio_output.cpp); otherwise, or with --headless, it runs with a null renderer,
 // no input and no sound output.
-// Usage: ConkerRecomp [--rom <baserom.us.z64>] [--seconds N] [--headless] [--window WxH]
+// Usage: ConkerRecomp [--rom <baserom.us.z64>] [--seconds N] [--headless] [--window WxH] [--data DIR]
 //   --rom PATH   the US ROM (a bare path works too, e.g. a ROM dropped onto the exe);
 //                only needed once, it is then kept with the game's data. The window
 //                build can also load it from the launcher.
@@ -12,6 +12,9 @@
 //   --headless   null renderer, no window, input or sound
 //   --window WxH open the window at this size, e.g. 2520x1080 to try a 21:9 screen
 //                (the window mode, windowed or fullscreen, is still the setting's)
+//   --my-view-only  in a netplay match, show only this player's part of the split screen
+//   --data DIR   keep the game's data (the stored ROM, saves, settings) in DIR instead,
+//                created if need be: e.g. to run two copies at once, as netplay's tests do
 
 #include <atomic>
 #include <chrono>
@@ -210,6 +213,33 @@ static void install_crash_handler() {
 static void install_crash_handler() {}
 #endif
 
+#if defined(_WIN32)
+// On Windows the program is a GUI app (host/CMakeLists.txt: WIN32_EXECUTABLE), so no console window
+// opens beside the game's (issue #128). Its output still goes where it went: a stream already handed
+// over (redirected to a file or a pipe) is kept, and otherwise, started from a terminal, the program
+// writes to that terminal's console. Started from Explorer or Steam there's none, and nothing's shown.
+static void attach_parent_console() {
+    auto handed_over = [](DWORD which) {
+        const HANDLE handle = GetStdHandle(which);
+        return handle != nullptr && handle != INVALID_HANDLE_VALUE && GetFileType(handle) != FILE_TYPE_UNKNOWN;
+    };
+    const bool out_handed_over = handed_over(STD_OUTPUT_HANDLE);
+    const bool err_handed_over = handed_over(STD_ERROR_HANDLE);
+    if ((out_handed_over && err_handed_over) || !AttachConsole(ATTACH_PARENT_PROCESS)) {
+        return;
+    }
+    FILE* stream = nullptr;
+    if (!out_handed_over) {
+        freopen_s(&stream, "CONOUT$", "w", stdout);
+    }
+    if (!err_handed_over) {
+        freopen_s(&stream, "CONOUT$", "w", stderr);
+    }
+}
+#else
+static void attach_parent_console() {}
+#endif
+
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 // Conker's audio microcode, recompiled by RSPRecomp (recomp/audio_ucode.toml).
 RspExitReason conker_audio_ucode(uint8_t* rdram, uint32_t ucode_addr);
@@ -248,6 +278,10 @@ namespace {
         // reads its id); have the runtime keep it pointing at the running thread.
         constexpr int32_t osRunningThread = 0x8002BE00;
         ultramodern::set_running_thread_variable(osRunningThread);
+
+#if defined(CONKER_NETPLAY)
+        conker::harness::start(rdram);
+#endif
     }
 
     RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
@@ -287,6 +321,11 @@ namespace {
 }
 
 ultramodern::input::connected_device_info_t conker::get_connected_device_info(int controller_num) {
+#if defined(CONKER_NETPLAY)
+    if (conker::harness::fixes_ports()) {
+        return conker::harness::connected_device_info(controller_num);
+    }
+#endif
 #if defined(CONKER_RT64)
     if (!headless) {
         return conker::frontend::get_connected_device_info(controller_num);
@@ -392,10 +431,12 @@ namespace {
 }
 
 int main(int argc, char** argv) {
+    attach_parent_console();
     // Unbuffered, so diagnostics (e.g. RT64's microcode hashes) survive a crash.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     install_crash_handler();
     std::filesystem::path rom_path;
+    std::filesystem::path data_dir;
     int seconds = 0;
 #if defined(CONKER_RT64)
     headless = false;
@@ -410,6 +451,18 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--headless") == 0) {
             headless = true;
         }
+        else if (std::strcmp(argv[i], "--data") == 0 && i + 1 < argc) {
+            data_dir = std::filesystem::absolute(argv[++i]);
+        }
+#if defined(CONKER_NETPLAY)
+        else if (conker::harness::parse_option(argc, argv, i)) {
+        }
+#endif
+#if defined(CONKER_RT64) && defined(CONKER_NETPLAY)
+        else if (std::strcmp(argv[i], "--my-view-only") == 0) {
+            conker::netplay_view::set_mine_only(true);
+        }
+#endif
 #if defined(CONKER_RT64)
         else if (std::strcmp(argv[i], "--window") == 0 && i + 1 < argc) {
             int width = 0, height = 0;
@@ -432,17 +485,30 @@ int main(int argc, char** argv) {
         // directory: make that the executable's folder, wherever the game is started from.
         std::filesystem::current_path(exe_directory(argv[0]));
         recompui::programconfig::set_program_id(conker::program_id());
+    }
+#endif
+    if (!data_dir.empty()) {
+        recomp::register_config_path(data_dir);
+    }
+#if defined(CONKER_RT64)
+    else if (!headless) {
         recomp::register_config_path(recompui::file::get_app_folder_path());
         migrate_old_data(old_data_dir, recomp::get_config_path());
     }
-    else
 #endif
-    {
+    else {
         recomp::register_config_path(old_data_dir);
     }
     std::filesystem::create_directories(recomp::get_config_path());
     // --seconds (test runs) starts the game directly instead of opening the launcher.
     bool start_directly = headless || seconds > 0;
+#if defined(CONKER_NETPLAY)
+    if (!conker::harness::prepare()) {
+        return EXIT_FAILURE;
+    }
+    // A replay starts the game directly too, from boot.
+    start_directly = start_directly || conker::harness::replaying();
+#endif
 
     recomp::GameEntry game{};
     game.rom_hash = conker::roms::us_rom_hash;
@@ -461,6 +527,10 @@ int main(int argc, char** argv) {
     game.decompression_routine = conker::decompress_rom;
     game.entrypoint_address = (gpr)(int32_t)0x80001000u;
     game.entrypoint = recomp_entrypoint;
+#if defined(CONKER_NETPLAY)
+    // Always: a netplay match can be started from the menu.
+    game.entrypoint = conker::harness::entrypoint;
+#endif
     game.on_init_callback = on_init;
     game.thread_create_callback = on_thread_create;
 #if defined(CONKER_RT64)
@@ -473,6 +543,14 @@ int main(int argc, char** argv) {
     conker::register_overlays();
     conker::register_mod_exports();
 
+#if defined(CONKER_RT64)
+    // General: Start Game Directly (issue #133): the game starts without the launcher once a ROM has been
+    // picked (and the launcher is shown as ever without one).
+    if (!headless && !start_directly && rom_path.empty() && conker::start_game_directly()) {
+        recomp::check_all_stored_roms();
+        start_directly = recomp::is_rom_valid(game_id);
+    }
+#endif
     if (!select_rom(rom_path, start_directly)) {
         return EXIT_FAILURE;
     }
@@ -500,6 +578,8 @@ int main(int argc, char** argv) {
                                 conker::audio::set_frequency };
     }
 #endif
+    // In deterministic mode the buffers play on the timeline instead, headless or not (audio_clock.cpp).
+    cfg.audio_callbacks = conker::audio_clock::wrap(cfg.audio_callbacks);
     cfg.events_callbacks = { vi_callback, nullptr };
     cfg.error_handling_callbacks = { message_box };
 #if defined(CONKER_RT64)
@@ -518,6 +598,10 @@ int main(int argc, char** argv) {
     }
 
     recomp::start(cfg);
+
+#if defined(CONKER_NETPLAY)
+    conker::harness::finish();
+#endif
 
 #if defined(CONKER_RT64)
     if (!headless) {

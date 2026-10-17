@@ -32,6 +32,7 @@
 #include <deque>
 #include <string>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
@@ -142,6 +143,7 @@ namespace {
         const std::string stick_camera = "stick_free_camera";
         const std::string camera_fov = "camera_field_of_view_degrees";
         const std::string aim_reticle = "aim_reticle";
+        const std::string aim_reticle_size = "aim_reticle_size";
         const std::string aim_swap_sticks = "aim_swap_sticks";
         const std::string aim_lock_on = "aim_lock_on";
     }
@@ -154,15 +156,26 @@ namespace {
     // config has them. There are none with --headless, which makes no menus, though the game still
     // asks for the camera's settings (its field of view every frame): reading the General tab's then
     // threw, and the headless run aborted ("General config has not been created yet").
+    //
+    // The netplay settings profile (netplay/profile.cpp) reads them all as headless does, but the reticle
+    // (drawn over the picture, not in the game): their fallbacks are each setting's default, but the mouse's
+    // and the free camera's, which are off.
     recomp::config::Config* option_config(const std::string& id) {
+        if (conker::netplay_profile::active() && id != options::aim_reticle) {
+            return nullptr;
+        }
         return recompui::config::find_option_config(id);
     }
 
-    // An enum setting, or its first value without the settings (Off for a toggle).
+    // An enum setting, or the fallback without the settings (by default its first value, or Off for a
+    // toggle).
     template <typename T>
-    T option(const std::string& id) {
+    T option(const std::string& id, std::optional<T> fallback = std::nullopt) {
         recomp::config::Config* config = option_config(id);
         if (config == nullptr) {
+            if (fallback) {
+                return *fallback;
+            }
             if constexpr (std::is_same_v<T, Toggle>) {
                 return Toggle::Off;
             }
@@ -205,6 +218,20 @@ namespace {
         {Toggle::On, "On", "On"},
         {Toggle::Off, "Off", "Off"},
     };
+    // Aiming: Reticle was On or Off: the ring keeps On's key (and value), so a setting saved On is the ring.
+    using ReticleStyle = conker::reticle::Style;
+    using ReticleSize = conker::reticle::Size;
+    EnumOptions reticle_styles = {
+        {ReticleStyle::Off, "Off", "Off"},
+        {ReticleStyle::Ring, "On", "Ring"},
+        {ReticleStyle::Crosshair, "Crosshair", "Crosshair"},
+        {ReticleStyle::Dot, "Dot", "Dot"},
+    };
+    EnumOptions reticle_sizes = {
+        {ReticleSize::Small, "Small", "Small"},
+        {ReticleSize::Medium, "Medium", "Medium"},
+        {ReticleSize::Large, "Large", "Large"},
+    };
     const std::string about =
         "<br /><recomp-color primary>Smooth</recomp-color>: the view eases toward where you aim, as in the original game."
         "<br /><recomp-color primary>Direct</recomp-color>: the view follows it exactly, with no easing.";
@@ -244,11 +271,15 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
         "Inverts the stick in R-Look (hold R and look around) and in the second aiming mode (e.g. the sniper scope, the magnum, throwables), separately from the mouse and gyro. <recomp-color primary>Invert Y</recomp-color> is the default and matches the original game: pushing the stick up looks down.",
         invert, Invert::Y);
     config.add_enum_option(options::aim_reticle, "Aiming: Reticle",
-        "Shows a green ring in the middle of the screen while aiming the slingshot, the throwing knives or the magnum, "
-        "like Conker: Live & Reloaded's, where what you aim at is. Not in plain R-Look, zoomed in (the sniper scope has "
-        "its own crosshair) or in split screen. <recomp-color primary>Off</recomp-color> matches the original game, "
-        "where you aim by eye.",
-        toggle, Toggle::Off);
+        "Shows a reticle in the middle of the screen while aiming the slingshot, the throwing knives or the magnum, "
+        "where what you aim at is: <recomp-color primary>Ring</recomp-color>, a green ring like Conker: Live & Reloaded's, "
+        "a <recomp-color primary>Crosshair</recomp-color>, or a <recomp-color primary>Dot</recomp-color>. Not in plain "
+        "R-Look, zoomed in (the sniper scope has its own crosshair) or in split screen. "
+        "<recomp-color primary>Off</recomp-color> matches the original game, where you aim by eye.",
+        reticle_styles, ReticleStyle::Off);
+    config.add_enum_option(options::aim_reticle_size, "Aiming: Reticle Size",
+        "How big the reticle is. <recomp-color primary>Medium</recomp-color> is a tenth of the screen's height.",
+        reticle_sizes, ReticleSize::Medium);
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
         "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player. "
@@ -313,6 +344,11 @@ void conker::look_aim::add_mouse_gyro_options(recomp::config::Config& config) {
 
 void conker::look_aim::on_input_poll() {
 #if defined(CONKER_RT64)
+    // The netplay settings profile: no mouse or gyro. None is queued, so the game's code never takes any
+    // (whether a poll's movement was queued by the time the game looks depends on the host's timing).
+    if (conker::netplay_profile::active()) {
+        return;
+    }
     Movement m;
     recompinput::get_mouse_deltas(&m.mouse_x, &m.mouse_y);
     recompinput::get_gyro_deltas(0, &m.gyro_x, &m.gyro_y);
@@ -325,8 +361,12 @@ void conker::look_aim::on_input_poll() {
 }
 
 #if defined(CONKER_RT64)
-bool conker::reticle::enabled() {
-    return option<Toggle>(options::aim_reticle) == Toggle::On;
+conker::reticle::Style conker::reticle::style() {
+    return option<Style>(options::aim_reticle);
+}
+
+conker::reticle::Size conker::reticle::size() {
+    return option<Size>(options::aim_reticle_size);
 }
 
 bool conker::look_aim::mouse_turns_camera() {
@@ -487,7 +527,7 @@ bool conker::look_aim::leaping_now() {
 }
 
 void conker::look_aim::leap_stick(float& x, float& y) {
-    if (!leaping) {
+    if (!leaping || conker::netplay_profile::active()) {
         leap_x = leap_y = 0.0f;
         return;
     }
@@ -524,11 +564,11 @@ namespace {
     // The game's own stick is Invert Y, so X turns around when the setting has X, and Y when the
     // setting lacks it.
     bool turn_stick_x() {
-        const Invert invert = option<Invert>(options::stick_invert);
+        const Invert invert = option<Invert>(options::stick_invert, Invert::Y);
         return invert == Invert::X || invert == Invert::Both;
     }
     bool turn_stick_y() {
-        const Invert invert = option<Invert>(options::stick_invert);
+        const Invert invert = option<Invert>(options::stick_invert, Invert::Y);
         return invert == Invert::None || invert == Invert::X;
     }
 }

@@ -41,7 +41,8 @@ yourself instead, read on.
   setting.
 - An aiming **Reticle**, a green ring like Live & Reloaded's, and **Swap Sticks**
   and **Lock-On** options for aiming.
-- Full audio: music, sound effects and the voice acting.
+- Full audio: music, sound effects and the voice acting, each with a volume of its
+  own (Music, Sound Effects and Speech, under the Main Volume).
 - Saving (EEPROM), stored per user.
 - A launcher with settings, controls and a mod menu (RecompFrontend, as in
   Zelda 64: Recompiled and Banjo: Recompiled).
@@ -50,11 +51,12 @@ yourself instead, read on.
 - **Conker's Detail** keeps Conker on his most detailed model, and **Show FPS**
   puts a frame rate counter in the corner.
 - Achievements, the program's own, for reaching the game's scenes.
-- ROM hacks that only change the game's assets, such as the uncensored and the
-  Russian translation ROMs, with the launcher switching between them.
+- ROM hacks that only change the game's assets, such as the uncensored ROM and the
+  Russian, German and Brazilian Portuguese translations, with the launcher switching
+  between them.
 - Mod support (`.nrm` mods: function patches and hooks). Three mods are
   included: **Skip Intro**, **Skip Any Cutscene** and **Cheats**.
-- Texture packs (RT64's `.rtz`, and GLideN64's `.htc`), for HD textures and
+- Texture packs (RT64's `.rtz`, and GLideN64's `.htc` and `.hts`), for HD textures and
   other replacements.
 - Save states: save anywhere with F5 and load with F7, in nine slots
   ([how to use them, and how they work](docs/save-states.md)).
@@ -232,7 +234,9 @@ IDO's macOS build from
 Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.exe`
 (Windows). The first time, pick **Load ROM** in the launcher and select your ROM
 (the same `baserom.us.z64` works). After that it's remembered, so just choose
-**Start Game**.
+**Start Game**. With **Start Game Directly** on the General tab, the game starts as
+soon as the program opens, without the launcher (turn it off in the settings while
+playing to get the launcher back).
 
 - **Settings** (in the launcher, or Esc / the controller's menu button in game)
   has its options by tab: General (deadzone, rumble), Camera (turning, the free
@@ -243,14 +247,21 @@ Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.
   ones its Chapters menu lists), from the first death to the end credits. They're
   kept on this computer, in `achievements.txt` with the settings, and the
   Achievements tab lists them. Only what you do in play counts: scenes a save
-  had already reached unlock when a new game reaches them.
+  had already reached unlock when a new game reaches them. **Achievement
+  Notifications** on the General tab turns off the line in the corner as one
+  unlocks; they still unlock and are listed. **Notifications** above it turns off
+  every line the program shows in the corner (achievements, save states, the
+  texture pack's F8), and each kind has its own setting too.
 - Saves, settings and the stored ROM live in `~/.config/ConkerRecompiled` on
   Linux, `~/Library/Application Support/ConkerRecompiled` on macOS and
   `%LOCALAPPDATA%\ConkerRecompiled` on Windows. Put an empty `portable.txt` next
   to the executable to keep them there instead.
 - **Save states**: F5 saves the game exactly as it is, F7 loads it back, F6
-  picks the next of the nine slots. They never touch the game's own saves. See
-  [docs/save-states.md](docs/save-states.md).
+  picks the next of the nine slots (rebind them, to keys, mouse or controller
+  buttons, in the Controls tab's **Hotkeys**). They never touch the game's own saves. See
+  [docs/save-states.md](docs/save-states.md). **Save State Notifications** on the
+  General tab turns off the line in the corner saying a state was saved or loaded,
+  or another slot picked (one saying it couldn't be still shows).
 - Default keyboard controls: move with WASD, A = Space, B = Left Shift,
   Z = Q, L = E, R = R, Start = Enter, C buttons = arrow keys, D-pad = IJKL.
   Everything can be remapped in Controls.
@@ -268,6 +279,19 @@ US ROM. The recompiled code only comes from the ROM's code, which has to be the 
 ROM's, so hacks that change the game's code are refused. A hack that repacks the
 game's compressed code without changing it, as the Russian fan translation does, is
 checked unpacked and plays too (**Version: US Russian**).
+
+The translations known by name, each a patch you apply to your own US ROM (none is
+included here):
+
+- **US Russian**, the Russian fan translation.
+- **US German**, [ConkerDeutschMod](https://github.com/niehoff90/ConkerDeutschMod) 0.2.0,
+  German voices and text.
+- **US Brazilian Portuguese** and **US Brazilian Portuguese Uncensored**, the
+  translation by João13, Mumm-Ra and By FTR (1.0.1). Its own boot screen isn't shown:
+  the recompiled game doesn't run the ROM's boot code, and the rest plays as it is.
+
+Other versions of these, or other hacks of the US ROM's assets, play too, listed as
+**US ROM hack** with the start of their hash.
 
 The launcher's **Version** option says which ROM is in play, with its region (for
 example **Version: US Original** or **Version: US Uncensored**), and so does the
@@ -316,10 +340,12 @@ Mods menu), then pick it in **Settings > Graphics > Texture Pack**, which turns 
 the other packs off. Packs installed while the game runs are listed there from
 the next start. Its default, **Set in the Mods Menu**, leaves them to the
 **Mods** menu instead, where several can be on at once (later ones in the list
-take precedence).
+take precedence). While playing, **F8** switches between the texture pack and
+the game's own textures, to compare them (**Texture Pack On/Off** in the
+Controls tab's **Hotkeys** binds it to another key or a button).
 
 GLideN64 texture packs (for Project64 and RetroArch) work too. Install the
-pack's `.htc` file the same way (**Install Mods** or dropped onto the Mods menu),
+pack's `.htc` or `.hts` file the same way (**Install Mods** or dropped onto the Mods menu),
 or put it in the `mods` folder and start the game or press the Mods menu's
 refresh button: it's unpacked, once, into a pack folder beside it, with its
 progress shown (a large pack takes a minute or so), and turned on. It's then in

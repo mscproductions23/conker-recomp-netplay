@@ -19,6 +19,7 @@
 #include "ultramodern/config.hpp"
 
 #include "conker.hpp"
+#include "game_trig.hpp"
 
 #if defined(CONKER_RT64)
 namespace RT64 {
@@ -69,7 +70,12 @@ namespace {
 
     // How much wider than the game's 4:3 the window shows: RT64 widens the 3D
     // view to the window's aspect ratio unless the aspect ratio is set to Original.
+    // With the netplay settings profile, 16:9's whatever the window, as what's
+    // widened is in the game's memory.
     float widescreen_ratio() {
+        if (conker::netplay_profile::active()) {
+            return conker::netplay_profile::widescreen_ratio;
+        }
         if (ultramodern::renderer::get_graphics_config().ar_option == ultramodern::renderer::AspectRatio::Original || window == nullptr) {
             return 1.0f;
         }
@@ -88,13 +94,13 @@ namespace {
             const char* value = SDL_getenv("CONKER_CULL_EXTRA");
             return value != nullptr ? std::max(1.0f, (float)std::atof(value)) : 1.0f;
         }();
-        return extra;
+        return conker::netplay_profile::active() ? 1.0f : extra;
     }
 
     // TEMP-DEBUG: CONKER_NO_CULL_WIDEN leaves the frustum and cull scale at 4:3.
     bool no_cull_widen() {
         static const bool off = SDL_getenv("CONKER_NO_CULL_WIDEN") != nullptr;
-        return off;
+        return off && !conker::netplay_profile::active();
     }
 
     // How far past each 4:3 edge sprites are kept, in N64 screen pixels: as far as
@@ -223,6 +229,7 @@ extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
     conker::cutscene_aspect::update(rdram);
     conker::shadows::game_frame();
     conker::look_aim::leap_frame(rdram);
+    conker::sound_volumes::game_frame(rdram);
 #if defined(CONKER_RT64)
     conker::local_achievements::game_frame(rdram);
 #endif
@@ -240,6 +247,9 @@ extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
     RT64::setInterpolationPaused(motion_blur_this_frame);
     motion_blur_this_frame = false;
     conker::fps_counter::game_frame();
+#endif
+#if defined(CONKER_RT64) && defined(CONKER_NETPLAY)
+    conker::netplay_view::game_frame(rdram);
 #endif
 }
 
@@ -319,19 +329,64 @@ extern "C" void conker_bubble_end(uint8_t* rdram, recomp_context* ctx) {
 // frame, then copies the frame into it. That copy is RT64's widened frame and is drawn back
 // across the whole width already, and zooming it each frame zoomed the last frame's ghost
 // again on every pass, dragging the picture into streaks.
+//
+// Nor for the pause menu's copy of the frame, which is RT64's high resolution picture now, as wide
+// as the window and blurred by RT64 (below): it's copied and drawn stretched, across the whole width.
 namespace {
     constexpr uint32_t motion_blur_copy = 0x800BE570; // D_800BE570
     constexpr uint32_t g_ex_setrectaspect_v1 = 0x000033;
     constexpr uint32_t g_ex_aspect_auto = 0x0;
+    constexpr uint32_t g_ex_aspect_stretch = 0x1;
     constexpr uint32_t g_ex_aspect_zoom = 0x3;
     constexpr uint32_t g_texrect = 0xE4;
 
     gpr frame_copy_dl_start = 0;
+    // The function running now copies the frame into the pause's picture, or draws the picture.
+    bool frame_copy_fills_pause = false;
+    bool frame_copy_draws_pause = false;
 
     bool is_sync(uint8_t* rdram, gpr cmd) {
         uint32_t w0 = (uint32_t)MEM_W(0, cmd);
         return (w0 == 0xE6000000 || w0 == 0xE7000000 || w0 == 0xE8000000) && MEM_W(4, cmd) == 0;
     }
+}
+
+// The pause menu's background. When the game pauses, func_150198FC copies the last frame into a
+// picture of its own (D_800BE9C4, with func_151D5E90 while the pause counter D_80082F90 is 0), blurs it
+// in place on the CPU over the next frames (func_151D61B0, the counter 2 to 5), and draws it behind the
+// menu (func_151D5E90 from it). RT64 makes the copy on the GPU, from its high resolution picture of the
+// frame: as sharp as the window and as wide (the native coordinates of a widened picture span all of
+// it). But the CPU's blur changes the picture in RDRAM, where it's the N64's 320 pixels of the 4:3 view
+// only, and RT64 then draws the picture from there: soft, and in widescreen the sides missing, which
+// zooming it to the window's width (above) made up for by cropping its top and bottom.
+//
+// So the CPU's blur is skipped, and RT64 blurs its high resolution copy instead, once it has drawn it
+// (gEXConkerBlurFramebuffer, rt64.patch: shrunk to about the N64's size, blurred with a Gaussian and
+// scaled back up). The copy and the picture's tiles are stretched across the whole width. Idea from
+// ConkerBFDReloaded (by dahmedvall95, MIT, github.com/DahSidiAbdallah/ConkerBFDReloaded), which kept the
+// game's blur and had RT64 squeeze the whole widened view into the 320 pixels instead.
+namespace {
+    constexpr uint32_t pause_picture = 0x800BE9C4; // D_800BE9C4, the pause's copy of the frame
+    constexpr uint32_t g_ex_conkerblurframebuffer_v1 = 0x000034;
+    // How much RT64 blurs the copy, in quarters of an N64 pixel (the Gaussian's sigma): about the
+    // game's own blur, four passes over the 320 pixels.
+    constexpr uint32_t pause_blur_strength = 8;
+
+    // Whether $a0, the start of a display list just written, follows a G_SETCIMG of the image.
+    bool follows_color_image(uint8_t* rdram, gpr dl, uint32_t image) {
+        return ((uint32_t)MEM_W(-16, dl) >> 24) == 0xFF && (uint32_t)MEM_W(-12, dl) == image;
+    }
+}
+
+// func_151D61B0, at its first instruction: $a0 is the picture it blurs. Returns 1 to skip it,
+// for the pause's copy of the frame, which RT64 blurs (above).
+extern "C" int conker_pause_skip_blur(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    const uint32_t picture = (uint32_t)MEM_W(0, (gpr)(int32_t)pause_picture);
+    return (picture != 0 && (uint32_t)ctx->r4 == picture) ? 1 : 0;
+#else
+    return 0;
+#endif
 }
 
 // The motion blur blends each frame with its copy of the last one. RT64's frames between the game's
@@ -348,6 +403,13 @@ extern "C" void conker_motion_blur(uint8_t* rdram, recomp_context* ctx) {
 // draws from.
 extern "C" void conker_frame_copy_begin(uint8_t* rdram, recomp_context* ctx) {
     frame_copy_dl_start = ctx->r4;
+    const uint32_t picture = (uint32_t)MEM_W(0, (gpr)(int32_t)pause_picture);
+#if defined(CONKER_RT64)
+    frame_copy_fills_pause = picture != 0 && follows_color_image(rdram, ctx->r4, picture);
+    frame_copy_draws_pause = picture != 0 && (uint32_t)ctx->r5 == picture;
+#else
+    frame_copy_fills_pause = frame_copy_draws_pause = false;
+#endif
     const uint32_t blur_copy = (uint32_t)MEM_W(0, (gpr)(int32_t)motion_blur_copy);
     if (blur_copy == 0) {
         return;
@@ -355,7 +417,7 @@ extern "C" void conker_frame_copy_begin(uint8_t* rdram, recomp_context* ctx) {
     // The motion blur draws its copy (func_151D6418 from D_800BE570), or copies the frame into
     // it (func_151D5E90 just after its colour image was set to D_800BE570).
     const bool draws_copy = (uint32_t)ctx->r5 == blur_copy;
-    const bool fills_copy = ((uint32_t)MEM_W(-16, ctx->r4) >> 24) == 0xFF && (uint32_t)MEM_W(-12, ctx->r4) == blur_copy;
+    const bool fills_copy = follows_color_image(rdram, ctx->r4, blur_copy);
     if (draws_copy || fills_copy) {
         frame_copy_dl_start = 0;
     }
@@ -369,10 +431,14 @@ extern "C" void conker_frame_copy_end(uint8_t* rdram, recomp_context* ctx) {
     if (start == 0 || end <= start || end - start > 0x10000) {
         return;
     }
+    const bool fills_pause = frame_copy_fills_pause;
+    const bool draws_pause = frame_copy_draws_pause;
+    frame_copy_fills_pause = frame_copy_draws_pause = false;
     gpr syncs_before[2] = { 0, 0 };
     int before_count = 0;
     gpr last_rect = 0;
     gpr last_sync = 0;
+    gpr middle_sync = 0; // one between the rectangles, for the pause's blur
     for (gpr cmd = start; cmd < end; cmd += 8) {
         if (((uint32_t)MEM_W(0, cmd) >> 24) == g_texrect) {
             last_rect = cmd;
@@ -381,6 +447,9 @@ extern "C" void conker_frame_copy_end(uint8_t* rdram, recomp_context* ctx) {
         else if (is_sync(rdram, cmd)) {
             if (last_rect == 0 && before_count < 2) {
                 syncs_before[before_count++] = cmd;
+            }
+            else if (last_rect != 0 && middle_sync == 0) {
+                middle_sync = cmd;
             }
             last_sync = cmd;
         }
@@ -391,9 +460,15 @@ extern "C" void conker_frame_copy_end(uint8_t* rdram, recomp_context* ctx) {
     gpr dl = syncs_before[0];
     put_command(rdram, dl, (rt64_hook_opcode << 24) | rt64_hook_magic, (rt64_hook_op_enable << 28) | rt64_extended_opcode);
     dl = syncs_before[1];
-    put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_setrectaspect_v1, g_ex_aspect_zoom);
+    put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_setrectaspect_v1, (fills_pause || draws_pause) ? g_ex_aspect_stretch : g_ex_aspect_zoom);
     dl = last_sync;
     put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_setrectaspect_v1, g_ex_aspect_auto);
+    // The copy into the pause's picture: RT64 blurs the picture once it's drawn.
+    if (fills_pause && middle_sync != 0 && middle_sync != last_sync) {
+        const uint32_t picture = (uint32_t)MEM_W(0, (gpr)(int32_t)pause_picture);
+        dl = middle_sync;
+        put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_conkerblurframebuffer_v1, (pause_blur_strength << 24) | (picture & 0x00FFFFFF));
+    }
 }
 
 // func_15180580 draws the circle wipe of spawning, dying and changing levels: black
@@ -417,6 +492,18 @@ namespace {
     // A ring of display lists: RT64 has long finished with one when it comes round again.
     constexpr uint32_t wide_dl_size = 0x10000;
     uint32_t wide_dl_offset = 0;
+}
+
+// For save states (conker::host_state): where the ring is, so a load writes where the state would.
+uint32_t conker::widescreen::dl_ring() {
+    return wide_dl_offset;
+}
+
+void conker::widescreen::set_dl_ring(uint32_t offset) {
+    wide_dl_offset = offset < wide_dl_size ? offset & ~7u : 0;
+}
+
+namespace {
 
     // Beyond the frame's sides, in N64 screen pixels. The scissor clips the rest.
     constexpr int32_t wide_reach = 1024;
@@ -577,6 +664,8 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
     put_command(rdram, game_dl, g_dl_branch, wide_dl);
 }
 
+// (Its trigonometry, as the backdrop's below and field_of_view.cpp's, is game_trig.hpp's: in netplay the same
+// on every platform, as the C library's rounds some last bits differently on Windows and Linux.)
 // func_1501B22C builds a camera's frustum from its fields of view: the view-space
 // normals of its four side planes, which the game culls the world and its objects
 // against. RT64 widens the picture, but those planes still hold the 4:3 view, so
@@ -592,9 +681,9 @@ extern "C" void conker_widen_frustum(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = ctx->r16;
     constexpr float degrees_to_radians = 3.14159265358979f / 180.0f;
     const float half_x = read_float(rdram, camera, 0x74) * 0.5f * degrees_to_radians;
-    const float wide_half_x = std::min(std::atan(std::tan(half_x) * ratio * cull_extra()), 1.5f);
-    const float c = std::cos(wide_half_x);
-    const float s = std::sin(wide_half_x);
+    const float wide_half_x = std::min(conker::game_trig::atan(conker::game_trig::tan(half_x) * ratio * cull_extra()), 1.5f);
+    const float c = conker::game_trig::cos(wide_half_x);
+    const float s = conker::game_trig::sin(wide_half_x);
     // Left (cos, 0, -sin) and right (-cos, 0, -sin), as the game writes them.
     write_float(rdram, camera, 0x88, c);
     write_float(rdram, camera, 0x8C, 0.0f);
@@ -676,14 +765,14 @@ extern "C" void conker_widen_backdrop_sectors(uint8_t* rdram, recomp_context* ct
     const uint32_t camera_index = (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4); // D_80082FA4
     const gpr camera = (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800BE628) + (gpr)(int32_t)(camera_index * 0x180);
     const gpr view = (gpr)(int32_t)(0x800D9C10 + camera_index * 0x40);
-    const float half_x = std::atan(std::tan(read_float(rdram, camera, 0x74) * 0.5f * degrees_to_radians) * ratio);
+    const float half_x = conker::game_trig::atan(conker::game_trig::tan(read_float(rdram, camera, 0x74) * 0.5f * degrees_to_radians) * ratio);
     const float half_y = read_float(rdram, camera, 0x78) * 0.5f * degrees_to_radians;
     // The camera looks along -z of its view: the y part of that is its pitch.
-    const float pitch = std::asin(std::clamp(-read_float(rdram, view, 0x18), -1.0f, 1.0f));
+    const float pitch = conker::game_trig::asin(std::clamp(-read_float(rdram, view, 0x18), -1.0f, 1.0f));
     const float corner_pitch = std::fabs(pitch) + half_y;
     float reach = 180.0f;
     if (corner_pitch < 89.0f * degrees_to_radians) {
-        reach = std::atan(std::tan(half_x) / std::cos(corner_pitch)) / degrees_to_radians + half_sector + spare;
+        reach = conker::game_trig::atan(conker::game_trig::tan(half_x) / conker::game_trig::cos(corner_pitch)) / degrees_to_radians + half_sector + spare;
     }
     ctx->f0.fl = std::max(ctx->f0.fl, std::min(reach, 180.0f));
 }
