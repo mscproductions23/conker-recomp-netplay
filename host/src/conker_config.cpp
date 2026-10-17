@@ -205,6 +205,15 @@ void conker::init_config() {
 
     recompui::config::create_mods_tab();
 
+    // The settings are Graphics, Sound, Controls and General (rumble, Start Game Directly). The other tabs
+    // are still made, so the code that reads their settings finds them and their defaults, but they aren't
+    // shown, nor are the General and Graphics tabs' notification and texture pack settings (hidden where
+    // they're added).
+    for (const std::string& id : { camera_tab_id, mouse_gyro_tab_id, std::string("achievements"),
+                                   recompui::config::mods::id }) {
+        recompui::config::set_tab_visible(id, false);
+    }
+
     recompui::config::finalize();
 }
 

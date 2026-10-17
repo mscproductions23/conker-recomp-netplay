@@ -324,9 +324,9 @@ namespace {
         conker::roms::init(recomp::get_config_path() / game.stored_filename());
         recompui::GameOptionsMenu* options = menu->init_game_options_menu(
             game.game_id, game.mod_game_id, game.display_name, game.thumbnail_bytes);
-        // Lower than recompui's 25% from the bottom: with Version and Add ROM, seven options
+        // A little lower than recompui's 25% from the bottom: with Netplay and Add ROM, six options
         // would reach up into the title.
-        options->set_bottom(10.0f, recompui::Unit::Percent);
+        options->set_bottom(14.0f, recompui::Unit::Percent);
         recompui::update_game_mod_id(game.mod_game_id);
         // The runtime has opened the mods by now: turn on the texture pack chosen in the settings.
         conker::texture_packs::apply();
@@ -342,11 +342,11 @@ namespace {
         conker::netplay_menu::init(game.game_id, recomp::get_config_path() / game.stored_filename());
         options->add_option("Netplay", conker::netplay_menu::open);
 #endif
-        version_option = options->add_option("Version", on_version_selected);
-        add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
+        // The launcher is Start Game, Netplay, Controls, Graphics & Sound, Add ROM and Exit: no Version
+        // switch (version_option stays null) and no Mods menu.
         options->add_setup_controls_option();
-        options->add_settings_option();
-        options->add_mods_option();
+        options->add_settings_option("Graphics & Sound");
+        add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
         options->add_exit_option();
         show_version();
     }
@@ -736,6 +736,7 @@ std::u8string conker::program_id() {
 void conker::frontend::init(recomp::GameEntry& game) {
     recompui::programconfig::set_program_name(program_name);
     recompui::programconfig::set_program_id(program_id());
+    conker::launcher_theme::apply();
 
     // The launcher's picture of the game.
     std::ifstream file(recompui::file::get_asset_path("thumbnail.png"), std::ios::binary);

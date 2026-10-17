@@ -130,7 +130,7 @@ void conker::texture_packs::add_options(recomp::config::Config& config) {
         "several can be on at once. <recomp-color primary>None</recomp-color> turns them all off. Choosing a pack turns "
         "it on and the others off. While playing, <b>F8</b> switches between the pack and the game's own textures, "
         "to compare them (Texture Pack On/Off in the Controls tab's Hotkeys, to bind it to another key or a button).",
-        options, mods_menu);
+        options, mods_menu, true);
     config.add_option_change_callback(option_id,
         [](recomp::config::ConfigValueVariant, recomp::config::ConfigValueVariant, recomp::config::OptionChangeContext context) {
             // Once applied: the Graphics tab keeps a choice as temporary until its Apply button
@@ -190,5 +190,5 @@ void conker::texture_packs::add_notification_options(recomp::config::Config& con
     config.add_enum_option(notifications_option, "Texture Pack Notifications",
         "Shows a line in the corner when F8 switches the texture pack on or off while playing. With "
         "<recomp-color primary>Off</recomp-color> it isn't shown.",
-        choices, Notifications::On);
+        choices, Notifications::On, true);
 }

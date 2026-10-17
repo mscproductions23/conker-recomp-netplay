@@ -376,7 +376,7 @@ void conker::save_states::add_options(recomp::config::Config& config) {
         "Shows a line in the corner when a save state is saved or loaded (F5, F7) and when another slot is picked (F6). "
         "With <recomp-color primary>Off</recomp-color> they aren't shown; a line saying one couldn't be saved or loaded "
         "still is. The keys are the Controls tab's Hotkeys, to bind them to others or to buttons.",
-        choices, Notifications::On);
+        choices, Notifications::On, true);
 }
 
 void conker::save_states::init() {

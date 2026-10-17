@@ -97,7 +97,7 @@ void conker::notices::add_options(recomp::config::Config& config) {
         "saved or loaded, the texture pack switched with F8. <recomp-color primary>Off</recomp-color> turns them all "
         "off; the settings below turn each kind off on its own. A line saying a save state couldn't be saved or loaded "
         "is still shown.",
-        choices, Notifications::On);
+        choices, Notifications::On, true);
 }
 
 void conker::notices::show(const std::string& text, bool replace) {

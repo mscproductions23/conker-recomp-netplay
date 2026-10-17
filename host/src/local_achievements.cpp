@@ -337,7 +337,7 @@ void conker::local_achievements::add_options(recomp::config::Config& config) {
     config.add_enum_option(notifications_option, "Achievement Notifications",
         "Shows a line in the corner when an achievement unlocks. With <recomp-color primary>Off</recomp-color> they're "
         "still earned and listed on the Achievements tab, only not announced.",
-        choices, Notifications::On);
+        choices, Notifications::On, true);
 }
 
 void conker::local_achievements::add_tab() {

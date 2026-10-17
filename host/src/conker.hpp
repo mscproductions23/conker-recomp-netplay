@@ -30,6 +30,12 @@ namespace conker {
     // mod_api.cpp: functions the game exports to mods.
     void register_mod_exports();
 
+    // launcher_theme.cpp: the launcher and menus' colours and corners.
+    namespace launcher_theme {
+        // Sets recompui's theme; before any UI is made.
+        void apply();
+    }
+
     // cutscene_aspect.cpp: the Cutscene Aspect Ratio setting, full cutscenes in 4:3.
     namespace cutscene_aspect {
         // Every frame, as the game starts its display list: sets the renderer's aspect ratio for a
