@@ -1,0 +1,69 @@
+# This private fork (mscproductions23/conker-recomp-netplay) stays up to date with upstream https://github.com/sciaschi/CBFD-Recompiled branch main, into branch master.
+# It never merges into master by itself: it opens ONE pull request for a human to review.
+# It uses no third-party actions: git and the GitHub CLI gh only.
+# A token WITHOUT the `workflow` scope cannot push merges that change .github/workflows, which upstream merges often do,
+# so SYNC_TOKEN should be a PAT with repo+workflow scope.
+
+name: sync-upstream
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    env:
+      UPSTREAM_URL: https://github.com/sciaschi/CBFD-Recompiled.git
+      UPSTREAM_BRANCH: main
+      BASE_BRANCH: master
+      SYNC_BRANCH: sync/upstream
+      TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 1. Full clone (no submodules), identity for commits
+          git clone "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git" "$RUNNER_TEMP/repo"
+          cd "$RUNNER_TEMP/repo"
+          git config user.name 'sync-upstream'
+          git config user.email 'sync-upstream@users.noreply.github.com'
+          # 2. Upstream remote and fetch
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream "$UPSTREAM_BRANCH"
+          # 3. Already merged? Nothing to do.
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" "origin/$BASE_BRANCH"; then
+            echo 'Already up to date'
+            exit 0
+          fi
+          # Measure before merging
+          NEW_COMMITS=$(git rev-list --count "origin/$BASE_BRANCH..upstream/$UPSTREAM_BRANCH")
+          UPSTREAM_HEAD=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+          # 4. Merge into sync branch
+          git checkout -B "$SYNC_BRANCH" "origin/$BASE_BRANCH"
+          if ! git merge --no-edit "upstream/$UPSTREAM_BRANCH"; then
+            git merge --abort
+            # Open issue only if none with this exact title is open
+            ISSUE_COUNT=$(gh issue list --state open --search 'in:title "Upstream sync needs a manual merge"' --json title --jq '[.[] | select(.title == "Upstream sync needs a manual merge")] | length')
+            if [ "$ISSUE_COUNT" -eq 0 ]; then
+              gh issue create --title 'Upstream sync needs a manual merge' --body "Automatic merge of upstream head $UPSTREAM_HEAD into $BASE_BRANCH conflicted. Resolve it by hand."
+            fi
+            exit 0
+          fi
+          # Clean merge: push the sync branch (force updates the existing PR branch)
+          git push --force origin "$SYNC_BRANCH"
+          # Open a PR only if none is open for this head/base
+          PR_COUNT=$(gh pr list --head "$SYNC_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq 'length')
+          if [ "$PR_COUNT" -eq 0 ]; then
+            BODY_FILE="$RUNNER_TEMP/pr-body.md"
+            printf '%s\n' "Upstream commits new since last sync: $NEW_COMMITS" "" "Upstream head: $UPSTREAM_HEAD" "" "Netplay needs identical builds: merge this, then cut a release." > "$BODY_FILE"
+            gh pr create --base "$BASE_BRANCH" --head "$SYNC_BRANCH" --title 'Sync with upstream main' --body-file "$BODY_FILE"
+          fi
