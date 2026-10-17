@@ -13,8 +13,12 @@ Playing
   3. Start Game for the single-player game and the game's own multiplayer, or
      Netplay to play online.
 
-The launcher has Start Game, Netplay, Controls, Graphics & Sound, Add ROM (for ROM
-hacks that only change the game's assets) and Exit.
+The launcher has Start Game, Netplay, Controls, Controller Test, Graphics & Sound,
+Add ROM (for ROM hacks that only change the game's assets) and Exit.
+
+The menus name the buttons for your controller (Xbox, PlayStation or Nintendo).
+Controller Test shows every button, stick and trigger live: hold Start or Esc for
+a second and a half to leave it.
 
 Netplay
   - Everyone must run the same version of this program. The handshake refuses a

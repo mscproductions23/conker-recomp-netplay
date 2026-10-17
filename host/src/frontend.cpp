@@ -50,6 +50,8 @@ namespace {
     void poll_inputs() {
         recompinput::poll_inputs();
         conker::look_aim::on_input_poll();
+        // The menus name the buttons for the controller player 1 uses (Xbox, PlayStation or Nintendo).
+        conker::controller_glyphs::update();
     }
 
     // The launcher's Version and Add ROM options, and the window title that names the
@@ -342,9 +344,10 @@ namespace {
         conker::netplay_menu::init(game.game_id, recomp::get_config_path() / game.stored_filename());
         options->add_option("Netplay", conker::netplay_menu::open);
 #endif
-        // The launcher is Start Game, Netplay, Controls, Graphics & Sound, Add ROM and Exit: no Version
+        // The launcher is Start Game, Netplay, Controls, Controller Test, Graphics & Sound, Add ROM and Exit: no Version
         // switch (version_option stays null) and no Mods menu.
         options->add_setup_controls_option();
+        options->add_option("Controller Test", conker::controller_test::open);
         options->add_settings_option("Graphics & Sound");
         add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
         options->add_exit_option();
@@ -763,4 +766,31 @@ void conker::frontend::set_callbacks(recomp::Configuration& cfg) {
     cfg.input_callbacks = { poll_inputs, get_port_input, conker::rumble::set,
                             conker::get_connected_device_info };
     cfg.error_handling_callbacks.message_box = recompui::message_box;
+}
+
+std::vector<SDL_GameController*> conker::frontend::connected_controllers() {
+    std::lock_guard lock{ open_controllers_mutex };
+    std::vector<SDL_GameController*> out;
+    for (const auto& [id, controller] : open_controllers) {
+        out.push_back(controller);
+    }
+    return out;
+}
+
+SDL_GameController* conker::frontend::primary_controller() {
+    // The one holding port 1 (the first to press a button), else the first connected.
+    SDL_JoystickID port_one = -1;
+    {
+        std::lock_guard lock{ port_mutex };
+        if (!port_order.empty()) {
+            port_one = port_order.front();
+        }
+    }
+    std::lock_guard lock{ open_controllers_mutex };
+    for (const auto& [id, controller] : open_controllers) {
+        if (id == port_one) {
+            return controller;
+        }
+    }
+    return open_controllers.empty() ? nullptr : open_controllers.front().second;
 }

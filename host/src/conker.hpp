@@ -36,6 +36,28 @@ namespace conker {
         void apply();
     }
 
+    // controller_glyphs.cpp: which family of controller (Xbox, PlayStation, Nintendo) the buttons are named
+    // for in the menus: the family of the controller holding port 1, or the first one connected.
+    namespace controller_glyphs {
+        enum class Family { Xbox, PlayStation, Nintendo };
+        struct Info {
+            Family family = Family::Xbox;
+            bool dualsense = false;     // a PlayStation 5 controller (its own Share, Options and touchpad glyphs)
+            const char* name = "Controller";    // "PlayStation 5 (DualSense)", "Xbox One", ...
+        };
+        // From SDL's own idea of the controller's type; Xbox for any it doesn't know.
+        Info info_of(_SDL_GameController* controller);
+        // Every input poll: sets the menus' glyph family (recompinput::set_controller_glyphs) from the
+        // controller in use.
+        void update();
+    }
+
+    // controller_test.cpp: the launcher's Controller Test page, each connected controller's buttons, sticks
+    // and triggers live, with the glyphs of its family.
+    namespace controller_test {
+        void open();
+    }
+
     // cutscene_aspect.cpp: the Cutscene Aspect Ratio setting, full cutscenes in 4:3.
     namespace cutscene_aspect {
         // Every frame, as the game starts its display list: sets the renderer's aspect ratio for a
@@ -130,6 +152,10 @@ namespace conker {
 
     // frontend.cpp: RecompFrontend's launcher and menus (recompui) and input (recompinput).
     namespace frontend {
+        // Every controller SDL has open (any thread). primary_controller is the one holding port 1, else the
+        // first connected, else null.
+        std::vector<_SDL_GameController*> connected_controllers();
+        _SDL_GameController* primary_controller();
         // The window's size when it opens (main.cpp's --window); 1600 x 900 when 0.
         inline int window_width = 0;
         inline int window_height = 0;
