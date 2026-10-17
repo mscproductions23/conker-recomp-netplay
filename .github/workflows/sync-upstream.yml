@@ -6,9 +6,8 @@
 
 name: sync-upstream
 
+# Manual only: run it from the Actions tab (Run workflow), or with `gh workflow run sync-upstream.yml`.
 on:
-  schedule:
-    - cron: '17 6 * * *'
   workflow_dispatch:
 
 permissions:
