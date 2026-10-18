@@ -22,12 +22,22 @@ a second and a half to leave it.
 
 Netplay
   - Everyone must run the same version of this program. The handshake refuses a
-    different build, ROM or settings profile.
+    different build, ROM or settings profile (the lobby says which).
   - The host opens Netplay, picks the number of players, the port and the address
-    friends will use, and sends them the join code. A Tailscale address works
-    without opening any ports; otherwise the host must forward the UDP port.
-  - The others open Netplay and paste the join code. The game starts on every
-    machine once all are in.
+    friends will use (Tailscale and home-network addresses are filled in for you),
+    and presses Host. Everyone then meets in a lobby.
+  - Friends join with the host's join code (paste it, or it is filled in from the
+    clipboard). If someone runs a room server, its address goes under "Room server"
+    on the Netplay page, the host also gets a short code such as K7Q-F2M, and friends
+    can type that instead. A Tailscale address works without opening any ports; the
+    program also asks the router to forward the port (UPnP) and says when it can't.
+  - In the lobby each player sees the others' names, controller types, ping and a
+    live view of their controller, so a bad pad or connection shows before the game
+    starts. Players press "I'm ready"; the host picks the input delay (Auto is
+    recommended from everyone's ping) and, if they like, a game mode (Deathmatch,
+    War, Tank, Race, Beach, Raptor or Heist), which takes everyone straight into
+    that match. "Choose in game" leaves the menus to the players. Then Start game.
+  - "Copy diagnostics" puts a report on the clipboard to send with a bug report.
   - The join code holds the host's address, so send it only to people you trust.
   - Each player uses their first controller. Mouse and gyro aiming and the free
     camera are off during a match. A match starts from boot with an empty save.
