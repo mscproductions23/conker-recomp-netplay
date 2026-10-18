@@ -19,7 +19,7 @@
 
 namespace conker::netplay {
     // Changes whenever any packet's layout or meaning does: peers with another one are refused.
-    constexpr uint16_t protocol_version = 6;
+    constexpr uint16_t protocol_version = 7;
     // The game's controller ports.
     constexpr int max_players = 4;
     // The most reads an Inputs packet carries: a peer catching up can send several at once. (Inputs are
@@ -107,6 +107,8 @@ namespace conker::netplay {
         uint8_t players = 0;
         uint8_t own_view = 0;
         uint8_t delay = 2; // the input delay the match starts with, in reads (0 to 8)
+        uint8_t mode = 0;  // 0 = none, the players pick in the game's own menus; 1 to 7 = a scripted match of that game mode (1 deathmatch, 2 war, 3 tank, 4 race, 5 beach, 6 raptor, 7 heist)
+        uint8_t variant = 0; // 0 to 3: which entry of the mode's list the script picks
         bool operator==(const Start&) const = default;
     };
     // Leaving, and why.

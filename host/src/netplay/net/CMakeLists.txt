@@ -28,6 +28,8 @@ target_compile_features(conker_netplay_packets PUBLIC cxx_std_20)
 
 add_executable(packets_test packets_test.cpp)
 target_link_libraries(packets_test PRIVATE conker_netplay_packets)
+add_executable(matchscript_test matchscript_test.cpp matchscript.cpp)
+target_compile_features(matchscript_test PRIVATE cxx_std_20)
 add_executable(join_code_test join_code_test.cpp)
 target_link_libraries(join_code_test PRIVATE conker_netplay_packets)
 

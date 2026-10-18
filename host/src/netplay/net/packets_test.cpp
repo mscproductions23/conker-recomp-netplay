@@ -63,8 +63,9 @@ int main() {
     CHECK(round_trips(some_inputs(), 51));
     CHECK(round_trips(Hash{ 4000000000u, 0xFEDCBA9876543210ull }, 17));
     CHECK(round_trips(Bye{ Reason::desync }, 6));
-    CHECK(round_trips(Start{ 3, 0, 2 }, 8));
-    CHECK(round_trips(Start{ 4, 1, 8 }, 8));
+    CHECK(round_trips(Start{ 3, 0, 2 }, 10));
+    CHECK(round_trips(Start{ 4, 1, 8 }, 10));
+    CHECK(round_trips(Start{ 3, 0, 2, 3, 1 }, 10));       // a game mode and variant
     CHECK(round_trips(Lobby{ 1, 3, name_of("Bo") }, 23));
     CHECK(round_trips(Roster{ 2, 1, 1, 2, 500, 12, name_of("Ana") }, 29));
     CHECK(round_trips(Roster{ 0, 0, 0, 0, 0, 0, {} }, 29));
@@ -88,6 +89,8 @@ int main() {
     CHECK(bytes_of(Start{ 1 }).empty());
     CHECK(bytes_of(Start{ 5 }).empty());
     CHECK(bytes_of(Start{ 2, 2, 2 }).empty());          // own view is 0 or 1
+    CHECK(bytes_of(Start{ 2, 0, 2, 8 }).empty());          // mode is 0 to 7
+    CHECK(bytes_of(Start{ 2, 0, 2, 0, 4 }).empty());       // variant is 0 to 3
     CHECK(bytes_of(Refuse{ (Reason)0 }).empty());
     CHECK(bytes_of(Bye{ (Reason)(last_reason + 1) }).empty());
     Inputs bad = some_inputs();
@@ -185,9 +188,9 @@ int main() {
     data = hello;
     data[2]++;
     CHECK(!decodes(data));
-    // A packet with the old protocol version 5 is refused too.
+    // A packet with the old protocol version 6 is refused too.
     data = bytes_of(Lobby{ 1, 0, name_of("Ana") });
-    data[2] = 5;
+    data[2] = 6;
     data[3] = 0;
     CHECK(!decodes(data));
     data = hello;
@@ -209,7 +212,7 @@ int main() {
     CHECK(round_trips(Lobby{ 1, 3, name_of("Bo") }, 23));
     CHECK(round_trips(Roster{ 2, 1, 1, 2, 500, 12, name_of("Ana") }, 29));
     CHECK(round_trips(Roster{ 0, 0, 0, 0, 0, 0, {} }, 29));
-    CHECK(round_trips(Start{ 2, 1, 8 }, 8));
+    CHECK(round_trips(Start{ 2, 1, 8 }, 10));
     CHECK(round_trips(LobbyPad{ 2, Pad{ 0x8000, -3, 4, 0 } }, 10));
     CHECK(round_trips(Ping{ 123456 }, 9));
     CHECK(round_trips(Pong{ 0xFFFFFFFF }, 9));
@@ -252,6 +255,12 @@ int main() {
     CHECK(bytes_of(Start{ 2, 0, 9 }).empty());
     data = bytes_of(Start{ 2, 0, 2 });
     data[7] = 9;
+    CHECK(!decodes(data));
+    data = bytes_of(Start{ 2, 0, 2 });
+    data[8] = 8;                                   // mode 8
+    CHECK(!decodes(data));
+    data[8] = 0;
+    data[9] = 4;                                   // variant 4
     CHECK(!decodes(data));
 
     CHECK(bytes_of(LobbyPad{ 1, Pad{ 0, 0, 0, err_no_controller } }).empty());

@@ -11,6 +11,10 @@
 //   --players <n>                ...of <n> players, 2 to 4 (2 by default)
 //   --split-screen               (hosting) let each player choose what they see; by default every player
 //                                sees only their own view of the split screen (the match's rule, for all)
+//   --game-mode <name>           (hosting) starts a scripted match of that game mode, instead of leaving the
+//                                players to the game's menus: deathmatch, war, tank, race, beach, raptor or heist
+//   --game-variant <0-3>         (hosting, with --game-mode) which entry of the mode's list the script picks
+//                                (0 by default)
 //   --netplay-address <address>  (hosting) this computer's address as the others reach it: the join code
 //                                is made from it and printed (it holds the match's random key)
 //   --netplay-join <code>        joins the host by its join code
@@ -106,6 +110,14 @@ namespace conker::lockstep {
     void set_delay_override(int reads);
     // The input delay the host will start with: the override if set, else recommended_delay().
     int chosen_delay();
+    // Host's pick for the next lobby_start: mode 0 is none (the players use the game's menus), 1 to 7
+    // is a scripted match of that game mode (see Start in packets.hpp), variant 0 to 3 is which entry
+    // of its list the script picks. Out-of-range values are 0.
+    void set_game_mode(int mode, int variant);
+    // The game mode of the match under way (see set_game_mode), 0 before a match and for none.
+    int match_mode();
+    // The variant of the match under way, 0 before a match and for none.
+    int match_variant();
     // A notice for the menu about a refused player (empty if none), cleared once read.
     std::string lobby_notice();
 

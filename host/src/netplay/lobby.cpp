@@ -83,6 +83,7 @@ namespace conker::netplay_lobby {
         recompui::ContextId context = recompui::get_current_context();
         set_display(recompui::Display::None);
         set_flex_direction(recompui::FlexDirection::Column);
+        set_flex_shrink(0.0f);
         set_gap(18.0f);
         set_width(100.0f, recompui::Unit::Percent);
 
@@ -192,6 +193,30 @@ namespace conker::netplay_lobby {
         delay_radio->add_index_changed_callback([this](uint32_t index) { on_delay_chosen(index); });
         delay_label = text(delay_row, "", Typography::LabelSM, color::TextDim);
 
+        // The game to play: the host's to choose. A mode starts the match in it by itself (the lobby presses the
+        // menus for everyone, on every machine alike); "In game" leaves the menus to the players.
+        mode_box = box(this, recompui::FlexDirection::Column, 6.0f);
+        mode_box->set_align_items(recompui::AlignItems::FlexStart);
+        recompui::Element* mode_row = box(mode_box, recompui::FlexDirection::Row, 16.0f);
+        text(mode_row, "Game", Typography::LabelMD);
+        mode_radio = context.create_element<recompui::Radio>(mode_row);
+        mode_radio->add_option("Choose in game");
+        for (const char* name : { "Deathmatch", "War", "Tank", "Race", "Beach", "Raptor", "Heist" }) {
+            mode_radio->add_option(name);
+        }
+        mode_radio->set_index(0);
+        mode_radio->add_index_changed_callback([this](uint32_t index) { on_mode_chosen(index); });
+        variant_row = box(mode_box, recompui::FlexDirection::Row, 16.0f);
+        text(variant_row, "List entry", Typography::LabelMD);
+        variant_radio = context.create_element<recompui::Radio>(variant_row);
+        for (const char* name : { "1st", "2nd", "3rd", "4th" }) {
+            variant_radio->add_option(name);
+        }
+        variant_radio->set_index(0);
+        variant_radio->add_index_changed_callback([this](uint32_t index) { on_mode_chosen(mode_radio->get_index()); });
+        text(variant_row, "which map, set or race the mode's own list starts with", Typography::LabelSM, color::TextDim);
+        variant_row->set_display(recompui::Display::None);
+
         start_button = context.create_element<recompui::Button>(this, "Start game", recompui::ButtonStyle::Primary);
         start_button->add_pressed_callback([this]() { on_start_pressed(); });
         hint_label = text(this, "", Typography::Body, color::TextDim);
@@ -207,6 +232,11 @@ namespace conker::netplay_lobby {
         start_button->set_display(hosting ? recompui::Display::Flex : recompui::Display::None);
         delay_radio->set_display(hosting ? recompui::Display::Flex : recompui::Display::None);
         delay_radio->set_index(0);
+        mode_box->set_display(hosting ? recompui::Display::Flex : recompui::Display::None);
+        mode_radio->set_index(0);
+        variant_radio->set_index(0);
+        variant_row->set_display(recompui::Display::None);
+        conker::lockstep::set_game_mode(0, 0);
         conker::lockstep::set_delay_override(0);
         notice_label->set_display(recompui::Display::None);
         notice_until = 0;
@@ -327,6 +357,12 @@ namespace conker::netplay_lobby {
         if (!conker::lockstep::lobby_start()) {
             hint_label->set_text("Not everyone is in and ready yet.");
         }
+    }
+
+    void LobbyPanel::on_mode_chosen(uint32_t index) {
+        // 0 is "Choose in game"; 1 to 7 are the scripted modes (lockstep's numbering).
+        variant_row->set_display(index == 0 ? recompui::Display::None : recompui::Display::Flex);
+        conker::lockstep::set_game_mode((int)index, index == 0 ? 0 : (int)variant_radio->get_index());
     }
 
     void LobbyPanel::on_delay_chosen(uint32_t index) {

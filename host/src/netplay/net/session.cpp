@@ -280,7 +280,7 @@ namespace conker::netplay {
         return true;
     }
 
-    bool Session::start(bool own_view, int delay) {
+    bool Session::start(bool own_view, int delay, int mode, int variant) {
         const int joined = (int)std::count_if(peers.begin(), peers.end(), [](const Peer& p) { return p.port >= 0; });
         if (!is_host || !entry_open || joined + 1 != match_players) {
             return false;
@@ -288,7 +288,7 @@ namespace conker::netplay {
         entry_open = false;
         for (const Peer& peer : peers) {
             if (peer.port >= 0) {
-                send_to(peer.connection, Start{ (uint8_t)match_players, (uint8_t)(own_view ? 1 : 0), (uint8_t)std::clamp(delay, 0, 8) });
+                send_to(peer.connection, Start{ (uint8_t)match_players, (uint8_t)(own_view ? 1 : 0), (uint8_t)std::clamp(delay, 0, 8), (uint8_t)std::clamp(mode, 0, 7), (uint8_t)std::clamp(variant, 0, 3) });
             }
         }
         return true;
@@ -753,6 +753,8 @@ namespace conker::netplay {
             Event event{ Event::Type::started };
             event.own_view = start->own_view != 0;
             event.delay = start->delay;
+            event.mode = start->mode;
+            event.variant = start->variant;
             events.push_back(std::move(event));
         }
         else if (const Inputs* inputs = std::get_if<Inputs>(&packet); inputs != nullptr) {

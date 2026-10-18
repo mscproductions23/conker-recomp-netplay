@@ -10,7 +10,7 @@
 //              and the last read not past 2^32 - 1
 //   5 Hash     u32 read, u64 hash                                                     17 bytes
 //   6 Bye      u8 reason                                                               6 bytes
-//   7 Start    u8 players (2 to 4), u8 own view (0 or 1), u8 delay (0 to 8)             8 bytes
+//   7 Start    u8 players (2 to 4), u8 own view (0 or 1), u8 delay (0 to 8), u8 mode (0 to 7), u8 variant (0 to 3)  10 bytes
 //   8 Lobby    u8 ready (0 or 1), u8 controller (0 to 3), 16 name bytes                23 bytes
 //   9 Roster   u8 port (< 4), u8 present (0 or 1), u8 ready (0 or 1), u8 controller (0 to 3), u16 ping ms, u16 jitter ms, 16 name bytes  29 bytes
 //  10 LobbyPad u8 port (< 4), u16 buttons, s8 stick x, s8 stick y                      10 bytes
@@ -36,7 +36,7 @@ namespace conker::netplay {
                 case inputs: return header_size + 6 + input_window * pad_size;
                 case hash: return header_size + 12;
                 case bye: return header_size + 1;
-                case start: return header_size + 3;
+                case start: return header_size + 5;
                 case lobby: return header_size + 2 + name_size;
                 case roster: return header_size + 8 + name_size;
                 case lobby_pad: return header_size + 5;
@@ -90,7 +90,7 @@ namespace conker::netplay {
             return valid_reason(p.reason);
         }
         bool valid_fields(const Start& p) {
-            return p.players >= 2 && p.players <= max_players && p.own_view <= 1 && p.delay <= 8;
+            return p.players >= 2 && p.players <= max_players && p.own_view <= 1 && p.delay <= 8 && p.mode <= 7 && p.variant <= 3;
         }
 
         bool valid_fields(const Lobby& p) {
@@ -228,6 +228,8 @@ namespace conker::netplay {
                 w.u8(p.players);
                 w.u8(p.own_view);
                 w.u8(p.delay);
+                w.u8(p.mode);
+                w.u8(p.variant);
             }
             else if constexpr (std::is_same_v<T, Lobby>) {
                 w.u8(p.ready);
@@ -320,6 +322,8 @@ namespace conker::netplay {
                 p.players = r.u8();
                 p.own_view = r.u8();
                 p.delay = r.u8();
+                p.mode = r.u8();
+                p.variant = r.u8();
                 packet = p;
                 break;
             }

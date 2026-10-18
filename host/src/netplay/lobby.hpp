@@ -74,6 +74,7 @@ namespace conker::netplay_lobby {
         void on_ready_pressed();
         void on_start_pressed();
         void on_delay_chosen(uint32_t index);
+        void on_mode_chosen(uint32_t index);
 
         bool hosting = false;
         bool ready = false;
@@ -93,6 +94,10 @@ namespace conker::netplay_lobby {
         recompui::Label* notice_label = nullptr;
         recompui::Label* delay_label = nullptr;
         recompui::Radio* delay_radio = nullptr;
+        recompui::Element* mode_box = nullptr;
+        recompui::Element* variant_row = nullptr;
+        recompui::Radio* mode_radio = nullptr;
+        recompui::Radio* variant_radio = nullptr;
         recompui::Label* hint_label = nullptr;
         std::string join_code;
         std::vector<Row> rows;

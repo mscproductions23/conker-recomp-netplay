@@ -13,7 +13,7 @@
 //
 // Names and Ready travel to everyone's roster, bad names are cleaned, a flood is dropped, a different build is
 // refused, the controller type and live pads travel both ways, the host measures a ping, the host starts the
-// match with its input delay, and the lobby doesn't change after the start. Each prints "ok:" and "FAIL:" lines
+// match with its input delay, game mode and variant, and the lobby doesn't change after the start. Each prints "ok:" and "FAIL:" lines
 // and ends with "lobby_test <role>: all passed" (exit code 0) or "lobby_test <role>: N FAILED".
 
 #include <chrono>
@@ -206,7 +206,7 @@ namespace {
         check(host.entry(0).ping_ms == 0, "the host has no ping to itself");
 
         // Start, with the host's input delay.
-        check(host.session.start(false, 5), "the host can start once every place is taken");
+        check(host.session.start(false, 5, 4, 2), "the host can start once every place is taken");
 
         // After the start nothing in the lobby changes, and asking it to doesn't break anything.
         host.session.set_lobby("Eve", false);
@@ -284,6 +284,7 @@ namespace {
                 "it is told the match has started");
             const Event* started = joiner.first(Event::Type::started);
             check(started != nullptr && started->delay == 5, "...with the input delay the host chose");
+            check(started != nullptr && started->mode == 4 && started->variant == 2, "...with the game mode and variant the host chose");
             // After the start its lobby messages change nothing, and it isn't dropped for them.
             joiner.session.set_lobby("Dave", false);
             joiner.session.send_lobby_pad(Pad{});

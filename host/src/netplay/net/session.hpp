@@ -43,6 +43,8 @@ namespace conker::netplay {
         int players = 0;
         bool own_view = false;  // started: the host's rule that every player sees only their own view
         int delay = 2;          // started: the input delay the match starts with, in reads (0 to 8)
+        int mode = 0;           // started: the game mode the host picked (0 none, 1 to 7: see Start in packets.hpp)
+        int variant = 0;        // started: the mode's entry the script picks (0 to 3)
         Reason reason = Reason::quit;
         std::string detail;     // the library's account of a closed connection, for the log
         Packet packet;
@@ -84,8 +86,8 @@ namespace conker::netplay {
         // Joins the host by its join code (`me`'s key is the code's).
         bool join(const std::string& code, const Hello& me, std::string& error);
         // Host: once every port is taken (false until then), starts the match: tells the joiners, and
-        // refuses any more. `own_view`: every player sees only their own view (the match's rule). `delay`: the input delay the match starts with, in reads (0 to 8).
-        bool start(bool own_view = false, int delay = 2);
+        // refuses any more. `own_view`: every player sees only their own view (the match's rule). `delay`: the input delay the match starts with, in reads (0 to 8). `mode`: the game mode the match is scripted for (0: none, the players pick in the game's own menus; 1 to 7: that mode). `variant`: which entry of the mode's list the script picks (0 to 3).
+        bool start(bool own_view = false, int delay = 2, int mode = 0, int variant = 0);
         // Before the match starts: this peer's name, whether it is ready, and its controller family, for the lobby.
         // The name is cut to 16 printable characters (anything else is dropped), or "Player N" (N the port + 1) if none is left.
         // The host sends the roster to every joiner (and pushes a roster event); a joiner sends it to the host.

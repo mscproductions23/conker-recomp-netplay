@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -25,6 +26,7 @@
 
 #include "librecomp/save_states.hpp"
 
+#include "net/matchscript.hpp"
 #include "net/session.hpp"
 
 // The runtime's flag for the program quitting (ultramodern::quit), set before it waits for the game's
@@ -53,6 +55,10 @@ namespace {
     int wanted_players = 2;
     bool host_own_view = true;      // hosting: the rule this peer will start the match with
     bool match_own_view = false;    // the rule of the match under way
+    int host_game_mode = 0;         // hosting: the game mode the host picked (0 none, 1 to 7: see set_game_mode)
+    int host_game_variant = 0;      // hosting: the variant the host picked (0 to 3)
+    int match_mode_ = 0;            // the game mode of the match under way (0 none)
+    int match_variant_ = 0;         // the variant of the match under way
     int delay = 2;
     int delay_override = 0;     // host: the input delay the host chose (0: automatic, see chosen_delay)
     uint64_t desync_at = never;
@@ -94,6 +100,8 @@ namespace {
     // until they're compared.
     std::map<uint32_t, uint64_t> own_hashes;
     std::map<std::pair<int, uint32_t>, uint64_t> their_hashes;
+    // The scripted match under way (null for none), built when the match starts.
+    std::unique_ptr<conker::netplay::MatchScript> script;
 
     double now() {
         using namespace std::chrono;
@@ -227,6 +235,17 @@ namespace {
         }
         return true;
     }
+
+    // Records the match's game mode and variant, and builds its script (none for mode 0).
+    void start_match_script(int mode, int variant) {
+        match_mode_ = mode;
+        match_variant_ = variant;
+        script.reset();
+        if (mode != 0) {
+            script = std::make_unique<conker::netplay::MatchScript>(
+                (conker::netplay::GameMode)(mode - 1), match_players, variant);
+        }
+    }
 }
 
 bool conker::lockstep::parse_option(int argc, char** argv, int& i) {
@@ -266,6 +285,33 @@ bool conker::lockstep::parse_option(int argc, char** argv, int& i) {
         desync_at = (uint64_t)n;
         return true;
     }
+    if (std::strcmp(option, "--game-mode") == 0) {
+        if (value == nullptr) {
+            std::fprintf(stderr, "[netplay] --game-mode needs a game mode: deathmatch, war, tank, race, beach, raptor or heist\n");
+            options_valid = false;
+            return true;
+        }
+        static const char* const modes[] = { "deathmatch", "war", "tank", "race", "beach", "raptor", "heist" };
+        bool found = false;
+        for (int j = 0; j < 7; j++) {
+            if (std::strcmp(value, modes[j]) == 0) {
+                host_game_mode = j + 1;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std::fprintf(stderr, "[netplay] --game-mode needs a game mode: deathmatch, war, tank, race, beach, raptor or heist\n");
+            options_valid = false;
+        }
+        i++;
+        return true;
+    }
+    if (std::strcmp(option, "--game-variant") == 0) {
+        number(0, 3, n);
+        host_game_variant = (int)n;
+        return true;
+    }
     if (std::strcmp(option, "--netplay-address") == 0) {
         if (value == nullptr) {
             std::fprintf(stderr, "[netplay] --netplay-address needs this computer's address, as the others reach it\n");
@@ -297,6 +343,9 @@ void conker::lockstep::set_host(int port, int players, bool own_view) {
     wanted_players = players;
     host_own_view = own_view;
     join_where.clear();
+    // The menu's host starts with no scripted match until the lobby picks one.
+    host_game_mode = 0;
+    host_game_variant = 0;
 }
 
 void conker::lockstep::set_join(const std::string& where) {
@@ -315,6 +364,11 @@ bool conker::lockstep::prepare() {
     // The others join by the code, which holds the match's key: without the address there's none to give.
     if (host_port > 0 && host_address.empty()) {
         std::fprintf(stderr, "[netplay] --netplay-host needs --netplay-address <this computer's address>, for the join code\n");
+        return false;
+    }
+    // The game mode is the host's choice of the match, so it means nothing for a joiner.
+    if (host_port <= 0 && host_game_mode != 0) {
+        std::fprintf(stderr, "[netplay] --game-mode needs --netplay-host\n");
         return false;
     }
     return true;
@@ -377,6 +431,9 @@ bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
     left = false;
     current_read = 0;
     match_own_view = false;
+    match_mode_ = 0;
+    match_variant_ = 0;
+    script.reset();
     delay_override = 0;
     why_over.clear();
     initial_sent = false;
@@ -416,9 +473,10 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
             case Event::Type::joined:
                 joined++;
                 std::printf("[netplay] port %d joined (%d of %d)\n", event.port + 1, joined, match_players);
-                if (!lobby_mode && joined == match_players && session->start(host_own_view)) {
+                if (!lobby_mode && joined == match_players && session->start(host_own_view, 2, host_game_mode, host_game_variant)) {
                     match_started = true;
                     match_own_view = host_own_view;
+                    start_match_script(host_game_mode, host_game_variant);
                 }
                 break;
             case Event::Type::left:
@@ -437,6 +495,7 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
                 match_started = true;
                 match_own_view = event.own_view;
                 delay = event.delay;
+                start_match_script(event.mode, event.variant);
                 break;
             case Event::Type::refused:
                 lobby_notice_text = std::string("A player was refused: ") + netplay::describe(event.reason) + ".";
@@ -456,8 +515,15 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
         }
     }
     if (match_started) {
-        std::printf("[netplay] the match starts: %d players, this is port %d, input delay %d reads%s\n", match_players,
-            own_port + 1, delay, match_own_view ? ", everyone sees only their own view" : "");
+        std::string scripted;
+        if (match_mode_ != 0) {
+            scripted = std::string(", scripted ") + conker::netplay::mode_name((conker::netplay::GameMode)(match_mode_ - 1)) + " match";
+            if (match_variant_ != 0) {
+                scripted += " (list entry " + std::to_string(match_variant_ + 1) + ")";
+            }
+        }
+        std::printf("[netplay] the match starts: %d players, this is port %d, input delay %d reads%s%s\n", match_players,
+            own_port + 1, delay, match_own_view ? ", everyone sees only their own view" : "", scripted.c_str());
         status = "The match starts.";
         return Progress::started;
     }
@@ -488,6 +554,9 @@ void conker::lockstep::cancel() {
         session = nullptr;
     }
     match_started = false;
+    match_mode_ = 0;
+    match_variant_ = 0;
+    script.reset();
 }
 
 bool conker::lockstep::connected() {
@@ -583,10 +652,11 @@ bool conker::lockstep::lobby_start() {
         return false;
     }
     const int chosen = chosen_delay();
-    if (session->start(host_own_view, chosen)) {
+    if (session->start(host_own_view, chosen, host_game_mode, host_game_variant)) {
         delay = chosen;
         match_started = true;
         match_own_view = host_own_view;
+        start_match_script(host_game_mode, host_game_variant);
         return true;
     }
     return false;
@@ -642,6 +712,22 @@ std::string conker::lockstep::lobby_notice() {
 
 bool conker::lockstep::own_view_for_everyone() {
     return match_started && match_own_view;
+}
+
+void conker::lockstep::set_game_mode(int mode, int variant) {
+    std::scoped_lock lock(session_mutex);
+    host_game_mode = mode < 0 || mode > 7 ? 0 : mode;
+    host_game_variant = variant < 0 || variant > 3 ? 0 : variant;
+}
+
+int conker::lockstep::match_mode() {
+    std::scoped_lock lock(session_mutex);
+    return match_mode_;
+}
+
+int conker::lockstep::match_variant() {
+    std::scoped_lock lock(session_mutex);
+    return match_variant_;
 }
 
 bool conker::lockstep::on_read(uint64_t read, ultramodern::input::Pad* pads, const PadSource& source,
@@ -720,9 +806,21 @@ bool conker::lockstep::on_read(uint64_t read, ultramodern::input::Pad* pads, con
         }
     }
 
+    // The scripted start, if any: its pads go to every port, the same on every peer, and the players' own
+    // controllers are ignored until it's over.
+    if (script != nullptr && read >= script->length()) {
+        std::printf("[netplay] the scripted start is over: the controllers are yours\n");
+        script.reset();
+    }
     for (int port = 0; port < match_players; port++) {
-        const Pad& pad = received[port][read];
-        pads[port] = { pad.buttons, pad.stick_x, pad.stick_y, pad.err_no };
+        if (script != nullptr) {
+            const conker::netplay::ScriptPad scripted = script->pad(read, port);
+            pads[port] = { scripted.buttons, scripted.stick_x, scripted.stick_y, scripted.err_no };
+        }
+        else {
+            const Pad& pad = received[port][read];
+            pads[port] = { pad.buttons, pad.stick_x, pad.stick_y, pad.err_no };
+        }
     }
     return true;
 }
