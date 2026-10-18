@@ -11,6 +11,8 @@
 //   5 Hash     u32 read, u64 hash                                                     17 bytes
 //   6 Bye      u8 reason                                                               6 bytes
 //   7 Start    u8 players (2 to 4), u8 own view (0 or 1)                               7 bytes
+//   8 Lobby    u8 ready (0 or 1), 16 name bytes (see valid_name)                       22 bytes
+//   9 Roster   u8 port (< 4), u8 present (0 or 1), u8 ready (0 or 1), 16 name bytes    24 bytes
 // A packet of any other size, version or kind, or with any field out of range, is refused.
 
 #include "packets.hpp"
@@ -19,7 +21,7 @@
 
 namespace conker::netplay {
     namespace {
-        enum Kind : uint8_t { hello = 1, welcome, refuse, inputs, hash, bye, start };
+        enum Kind : uint8_t { hello = 1, welcome, refuse, inputs, hash, bye, start, lobby, roster };
         constexpr size_t header_size = 5;
         constexpr size_t pad_size = 5;
 
@@ -32,6 +34,8 @@ namespace conker::netplay {
                 case hash: return header_size + 12;
                 case bye: return header_size + 1;
                 case start: return header_size + 2;
+                case lobby: return header_size + 1 + name_size;
+                case roster: return header_size + 3 + name_size;
             }
             return 0;
         }
@@ -39,6 +43,15 @@ namespace conker::netplay {
 
         bool valid_reason(Reason reason) {
             return (uint8_t)reason >= 1 && (uint8_t)reason <= last_reason;
+        }
+
+        bool all_nul(const std::array<char, name_size>& name) {
+            for (char c : name) {
+                if (c != 0) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         // Each kind's fields (plain overloads: MSVC misreads `p.count < 1 || p.count > n` in a generic
@@ -74,6 +87,15 @@ namespace conker::netplay {
             return p.players >= 2 && p.players <= max_players && p.own_view <= 1;
         }
 
+        bool valid_fields(const Lobby& p) {
+            return p.ready <= 1 && valid_name(p.name);
+        }
+
+        bool valid_fields(const Roster& p) {
+            return p.port < max_players && p.present <= 1 && p.ready <= 1 &&
+                   (p.present == 0 ? (p.ready == 0 && all_nul(p.name)) : valid_name(p.name));
+        }
+
         bool valid_packet(const Packet& packet) {
             return std::visit([](const auto& p) { return valid_fields(p); }, packet);
         }
@@ -84,6 +106,7 @@ namespace conker::netplay {
             void u16(uint16_t v) { u8((uint8_t)v); u8((uint8_t)(v >> 8)); }
             void u32(uint32_t v) { u16((uint16_t)v); u16((uint16_t)(v >> 16)); }
             void u64(uint64_t v) { u32((uint32_t)v); u32((uint32_t)(v >> 32)); }
+            void name(const std::array<char, name_size>& n) { for (char c : n) u8((uint8_t)c); }
         };
 
         // Reads a packet whose size has already been checked.
@@ -92,12 +115,38 @@ namespace conker::netplay {
             uint8_t u8() { return *at++; }
             uint16_t u16() { uint16_t v = u8(); return (uint16_t)(v | (u8() << 8)); }
             uint32_t u32() { uint32_t v = u16(); return v | ((uint32_t)u16() << 16); }
+            std::array<char, name_size> name() { std::array<char, name_size> n{}; for (char& c : n) c = (char)u8(); return n; }
             uint64_t u64() { uint64_t v = u32(); return v | ((uint64_t)u32() << 32); }
         };
     }
 
     bool valid(const Pad& pad) {
         return (pad.buttons & reserved_buttons) == 0 && (pad.err_no == 0 || pad.err_no == err_no_controller);
+    }
+
+    bool valid_name(const std::array<char, name_size>& name) {
+        size_t length = name_size;
+        for (size_t i = 0; i < name_size; ++i) {
+            if (name[i] == 0) {
+                length = i;
+                break;
+            }
+        }
+
+        if (length < 1) return false;
+
+        for (size_t i = length; i < name_size; ++i) {
+            if (name[i] != 0) return false;
+        }
+
+        if (name[0] == ' ' || name[length - 1] == ' ') return false;
+
+        for (size_t i = 0; i < length; ++i) {
+            uint8_t byte = static_cast<uint8_t>(name[i]);
+            if (byte < 0x20 || byte > 0x7E) return false;
+        }
+
+        return true;
     }
 
     const char* describe(Reason reason) {
@@ -164,6 +213,16 @@ namespace conker::netplay {
                 w.u8(p.players);
                 w.u8(p.own_view);
             }
+            else if constexpr (std::is_same_v<T, Lobby>) {
+                w.u8(p.ready);
+                w.name(p.name);
+            }
+            else if constexpr (std::is_same_v<T, Roster>) {
+                w.u8(p.port);
+                w.u8(p.present);
+                w.u8(p.ready);
+                w.name(p.name);
+            }
         }, packet);
         return (size_t)(w.at - out.data());
     }
@@ -229,6 +288,24 @@ namespace conker::netplay {
                     Start p;
                     p.players = r.u8();
                     p.own_view = r.u8();
+                    packet = p;
+                }
+                break;
+            case lobby:
+                {
+                    Lobby p;
+                    p.ready = r.u8();
+                    p.name = r.name();
+                    packet = p;
+                }
+                break;
+            case roster:
+                {
+                    Roster p;
+                    p.port = r.u8();
+                    p.present = r.u8();
+                    p.ready = r.u8();
+                    p.name = r.name();
                     packet = p;
                 }
                 break;

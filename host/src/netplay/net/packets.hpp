@@ -18,7 +18,7 @@
 
 namespace conker::netplay {
     // Changes whenever any packet's layout or meaning does: peers with another one are refused.
-    constexpr uint16_t protocol_version = 4;
+    constexpr uint16_t protocol_version = 5;
     // The game's controller ports.
     constexpr int max_players = 4;
     // The most reads an Inputs packet carries: a peer catching up can send several at once. (Inputs are
@@ -26,6 +26,8 @@ namespace conker::netplay {
     constexpr int input_window = 8;
     // The largest packet, to size buffers.
     constexpr size_t max_packet_size = 64;
+
+    constexpr size_t name_size = 16;
 
     // One controller read of one pad, as the N64 gives it to the game (the harness's 5 bytes).
     struct Pad {
@@ -40,6 +42,9 @@ namespace conker::netplay {
     // A pad's err_no: 0, or the N64's "no controller" (CONT_NO_RESPONSE_ERROR).
     constexpr uint8_t err_no_controller = 0x08;
     bool valid(const Pad& pad);
+
+    // A player's name: the bytes before the first NUL, 1 to 16 characters, printable ASCII, no leading or trailing space, and only NULs after the first NUL.
+    bool valid_name(const std::array<char, name_size>& name);
 
     // Why a peer is refused or a match ends.
     enum class Reason : uint8_t {
@@ -94,7 +99,7 @@ namespace conker::netplay {
         uint64_t hash = 0;
         bool operator==(const Hash&) const = default;
     };
-    // Host to everyone, once every port is taken: the match starts, with this many players, and whether
+    // Host to everyone, when the host decides to start the match (it needs every port taken): the match starts, with this many players, and whether
     // every player sees only their own view of the split screen (the host's rule for the match: 1), or each
     // chooses (0).
     struct Start {
@@ -108,7 +113,23 @@ namespace conker::netplay {
         bool operator==(const Bye&) const = default;
     };
 
-    using Packet = std::variant<Hello, Welcome, Refuse, Inputs, Hash, Bye, Start>;
+    // Peer to host, in the lobby before the match starts: this peer's name and whether it is ready (0 or 1).
+    struct Lobby {
+        uint8_t ready = 0;
+        std::array<char, name_size> name{};   // the name: 1 to 16 characters, see valid_name
+        bool operator==(const Lobby&) const = default;
+    };
+
+    // Host to joiners, one packet per port, in the lobby: the port's player (present 1, or 0 for nobody there), whether ready, and its name.
+    struct Roster {
+        uint8_t port = 0;
+        uint8_t present = 0;
+        uint8_t ready = 0;
+        std::array<char, name_size> name{};   // the name (all NUL for nobody there): see valid_name
+        bool operator==(const Roster&) const = default;
+    };
+
+    using Packet = std::variant<Hello, Welcome, Refuse, Inputs, Hash, Bye, Start, Lobby, Roster>;
 
     // Writes `packet` into `out` and returns its size, or 0 if the packet isn't valid (the same checks
     // as decode's), so nothing invalid is ever sent.

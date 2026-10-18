@@ -62,3 +62,7 @@ target_link_libraries(conker_netplay_net PUBLIC conker_netplay_packets GameNetwo
 
 add_executable(netplay_probe probe.cpp)
 target_link_libraries(netplay_probe PRIVATE conker_netplay_net)
+
+# The lobby (names, Ready, the roster, starting) between a host and joiners in one process.
+add_executable(lobby_test lobby_test.cpp)
+target_link_libraries(lobby_test PRIVATE conker_netplay_net)

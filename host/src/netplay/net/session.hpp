@@ -8,9 +8,10 @@
 // The handshake: a joiner sends Hello (the match's key, then build, ROM, settings profile and mods
 // hashes) within 3 s. The host closes a wrong key at once, telling it nothing else; then it refuses any
 // other difference, or a full or started match, and otherwise gives it the lowest free port (the host is
-// port 0) with Welcome. Once every port is taken, the host starts the match (Start). Then each peer sends its own port's pads (Inputs) and memory hashes (Hash) to
+// port 0) with Welcome. The host calls start() when it decides to (lockstep's lobby: when everyone is ready; or at once, for the command line), and the match starts (Start). Then each peer sends its own port's pads (Inputs) and memory hashes (Hash) to
 // the host, which passes Inputs on to the others: the host is the hub, so joiners only ever connect to
 // it. A peer that sends anything else (another port's inputs, a second Hello) is dropped.
+// Before the start, each joiner sends its name and whether it is ready (Lobby); the host keeps the roster of every port and sends it to every joiner (Roster).
 //
 // Single-threaded: call poll() often (each controller read, or in a loop) from one thread; it runs the
 // library's callbacks and returns what happened.
@@ -32,6 +33,7 @@ namespace conker::netplay {
             packet,     // `packet` arrived (Inputs or Hash), from `port`'s peer (via the host for a joiner)
             left,       // host: `port`'s peer left or was dropped, for `reason`
             ended,      // joiner: refused, or the connection to the host ended, for `reason`
+            roster,  // the lobby's roster changed (host: someone joined, left or changed; joiner: a Roster packet arrived). Read it with roster().
         };
         Type type;
         int port = -1;
@@ -50,6 +52,14 @@ namespace conker::netplay {
     bool startup(std::string& error);
     void shutdown();
 
+    // One port's player in the lobby, as the host knows it, or as a joiner was last told it: present (a
+    // player is there), ready, and the name.
+    struct RosterEntry {
+        bool present = false;
+        bool ready = false;
+        std::string name;
+    };
+
     class Session {
     public:
         Session();
@@ -67,6 +77,14 @@ namespace conker::netplay {
         // Host: once every port is taken (false until then), starts the match: tells the joiners, and
         // refuses any more. `own_view`: every player sees only their own view (the match's rule).
         bool start(bool own_view = false);
+        // Before the match starts: this peer's name and whether it is ready, for the lobby. The name is cut to
+        // 16 printable characters (anything else is dropped), or "Player N" (N the port + 1) if none is left.
+        // The host sends the roster to every joiner (and pushes a roster event); a joiner sends it to the host.
+        // After Start, nothing.
+        void set_lobby(const std::string& name, bool ready);
+        // The lobby's roster: one entry per port (match_players of them), the host's own table or a joiner's
+        // last one from the host. Empty before the joiner is welcomed.
+        std::vector<RosterEntry> roster() const;
 
         // What has happened since the last poll.
         std::vector<Event> poll();
@@ -93,6 +111,8 @@ namespace conker::netplay {
             int port = -1;          // -1 until the handshake is done
             double connected_at = 0;
             int64_t last_hash = -1; // the read of the last Hash from it (one per read, in order)
+            double lobby_window = 0; // the start of this peer's current second of Lobby packets
+            int lobby_count = 0; // the Lobby packets it has sent in that second
         };
 
         void on_status_changed(const void* info);
@@ -100,6 +120,12 @@ namespace conker::netplay {
         void drop(Peer& peer, Reason reason, std::vector<Event>* events);
         void send_to(uint32_t connection, const Packet& packet);
         Peer* find(uint32_t connection);
+        // Lobby (host): the Roster packet for `port`'s entry, and sends every entry to every joiner that has a port.
+        Roster roster_packet(int port) const;
+        void broadcast_roster();
+        // Lobby (host): clears `port`'s entry (a joiner left or was dropped before the start) and broadcasts it,
+        // pushing a roster event; nothing before the start, for port 0 or with no port.
+        void vacate(int port, std::vector<Event>& events);
         friend void status_changed_callback(void* info);
 
         bool is_host = false;
@@ -113,5 +139,12 @@ namespace conker::netplay {
         uint32_t poll_group = 0;
         std::vector<Peer> peers;            // host: everyone connected; joiner: the host
         std::vector<Event> pending_events;  // from the status callback, until the next poll
+        // Lobby: the table (host: the roster; joiner: the host's last Roster for each port), and this peer's
+        // own name and ready flag as set_lobby gave them (sent once welcomed, if set).
+        std::vector<RosterEntry> table;
+        std::string lobby_raw;      // the name as given, before it's cleaned (a blank one gets "Player N" once the port is known)
+        std::string lobby_name;
+        bool lobby_ready = false;
+        bool lobby_set = false;
     };
 }

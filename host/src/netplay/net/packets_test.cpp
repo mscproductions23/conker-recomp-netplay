@@ -45,6 +45,13 @@ namespace {
         inputs.pads[2] = { 0, 0, 0, err_no_controller };
         return inputs;
     }
+    std::array<char, name_size> name_of(const char* text) {
+        std::array<char, name_size> result{};
+        for (size_t i = 0; i < name_size && text[i] != '\0'; i++) {
+            result[i] = text[i];
+        }
+        return result;
+    }
 }
 
 int main() {
@@ -58,6 +65,13 @@ int main() {
     CHECK(round_trips(Bye{ Reason::desync }, 6));
     CHECK(round_trips(Start{ 3, 0 }, 7));
     CHECK(round_trips(Start{ 4, 1 }, 7));
+    CHECK(round_trips(Lobby{ 1, name_of("Ana") }, 22));
+    CHECK(round_trips(Lobby{ 0, name_of("0123456789ABCDEF") }, 22));
+    CHECK(round_trips(Roster{ 3, 1, 1, name_of("Ana") }, 24));
+    CHECK(round_trips(Roster{ 1, 1, 0, name_of("Bo B") }, 24));
+    CHECK(round_trips(Roster{ 0, 0, 0, {} }, 24));
+    const std::vector<uint8_t> lobby = bytes_of(Lobby{ 1, name_of("Ana") });
+    CHECK(lobby[4] == 8 && lobby[5] == 1 && lobby[6] == 'A' && lobby[8] == 'a' && lobby[9] == 0);
 
     // The layout: header, then little-endian fields.
     const std::vector<uint8_t> hello = bytes_of(Hello{ 0x0807060504030201ull, 0, 0, 0x1112131415161718ull, 0x2122232425262728ull });
@@ -118,6 +132,52 @@ int main() {
     data = inputs;
     data[11] |= 0x80;                               // pad 0's reserved button
     CHECK(!decodes(data));
+    // Lobby and Roster: refused by encode, and by decode as bytes, for each of these.
+    CHECK(bytes_of(Lobby{ 1, name_of("A\x01" "B") }).empty());
+    CHECK(bytes_of(Lobby{ 1, name_of(" Ana") }).empty());
+    CHECK(bytes_of(Lobby{ 1, name_of("Ana ") }).empty());
+    CHECK(bytes_of(Lobby{ 0, {} }).empty());
+    CHECK(bytes_of(Lobby{ 2, name_of("Ana") }).empty());
+    CHECK(bytes_of(Roster{ 4, 1, 0, name_of("Ana") }).empty());
+    CHECK(bytes_of(Roster{ 1, 2, 0, name_of("Ana") }).empty());
+    CHECK(bytes_of(Roster{ 1, 1, 2, name_of("Ana") }).empty());
+    CHECK(bytes_of(Roster{ 1, 0, 0, name_of("Ana") }).empty());
+    CHECK(bytes_of(Roster{ 1, 0, 1, {} }).empty());
+    data = bytes_of(Lobby{ 1, name_of("Ana") });
+    data[7] = 0x01;
+    CHECK(!decodes(data));
+    data = bytes_of(Lobby{ 1, name_of("Ana") });
+    data[6] = ' ';
+    CHECK(!decodes(data));
+    data = bytes_of(Lobby{ 1, name_of("Ana") });
+    data[8] = ' ';
+    CHECK(!decodes(data));
+    data = bytes_of(Lobby{ 1, name_of("Ana") });
+    data[11] = 'x';
+    CHECK(!decodes(data));
+    data = bytes_of(Lobby{ 1, name_of("Ana") });
+    data[6] = 0;
+    data[7] = 0;
+    data[8] = 0;
+    CHECK(!decodes(data));
+    data = bytes_of(Lobby{ 1, name_of("Ana") });
+    data[5] = 2;
+    CHECK(!decodes(data));
+    data = bytes_of(Roster{ 1, 1, 0, name_of("Ana") });
+    data[5] = 4;
+    CHECK(!decodes(data));
+    data = bytes_of(Roster{ 1, 1, 0, name_of("Ana") });
+    data[6] = 2;
+    CHECK(!decodes(data));
+    data = bytes_of(Roster{ 1, 1, 0, name_of("Ana") });
+    data[7] = 2;
+    CHECK(!decodes(data));
+    data = bytes_of(Roster{ 1, 1, 0, name_of("Ana") });
+    data[6] = 0;
+    CHECK(!decodes(data));
+    data = bytes_of(Roster{ 1, 0, 0, {} });
+    data[7] = 1;
+    CHECK(!decodes(data));
 
     // Sizes, versions, kinds and the magic.
     for (size_t size = 0; size < 64; size++) {
@@ -128,13 +188,18 @@ int main() {
     data = hello;
     data[2]++;
     CHECK(!decodes(data));
+    // A packet with the old protocol version 4 is refused too.
+    data = bytes_of(Lobby{ 1, name_of("Ana") });
+    data[2] = 4;
+    data[3] = 0;
+    CHECK(!decodes(data));
     data = hello;
     data[3] = 1;
     CHECK(!decodes(data));
     data = hello;
     data[0] = 'X';
     CHECK(!decodes(data));
-    for (int kind : { 0, 8, 255 }) {
+    for (int kind : { 0, 10, 255 }) {
         data = hello;
         data[4] = (uint8_t)kind;
         CHECK(!decodes(data));

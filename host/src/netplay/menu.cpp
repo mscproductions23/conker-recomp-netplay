@@ -34,6 +34,7 @@
 #include "../conker.hpp"
 #include "hello.hpp"
 #include "lockstep.hpp"
+#include "lobby.hpp"
 #include "net/session.hpp"
 
 namespace {
@@ -61,6 +62,12 @@ namespace {
         recompui::Button* host_button = nullptr;
         recompui::Button* join_button = nullptr;
         recompui::Button* cancel_button = nullptr;
+        // The sections that make way for the lobby while connecting, and the lobby itself.
+        recompui::Element* host_section = nullptr;
+        recompui::Element* join_section = nullptr;
+        recompui::Element* display_section = nullptr;
+        conker::netplay_lobby::LobbyPanel* lobby_panel = nullptr;
+        bool lobby_shown = false;
         int players = 2;
         bool hosting = false;               // a match is hosted (connecting, as the host)
         bool own_view_for_everyone = true;  // hosting: the match's screens rule
@@ -125,6 +132,10 @@ namespace {
             else {
                 code_label->set_text("Join code: " + code);
             }
+            // The lobby shows the code too, as the settings that hold it are hidden while connecting.
+            if (lobby_panel != nullptr) {
+                lobby_panel->set_join_code(code);
+            }
         }
 
         void set_state(State next, const std::string& status) {
@@ -137,6 +148,19 @@ namespace {
             host_button->set_enabled(state == State::idle);
             join_button->set_enabled(state == State::idle);
             cancel_button->set_display(state == State::connecting ? recompui::Display::Flex : recompui::Display::None);
+            // While connecting the lobby takes the place of the host, join and screen settings.
+            const bool lobby = state == State::connecting;
+            const recompui::Display settings = lobby ? recompui::Display::None : recompui::Display::Flex;
+            host_section->set_display(settings);
+            join_section->set_display(settings);
+            display_section->set_display(settings);
+            if (lobby && !lobby_shown) {
+                lobby_panel->open(hosting);
+            }
+            else if (!lobby) {
+                lobby_panel->close();
+            }
+            lobby_shown = lobby;
             // An update applies the text (and, while connecting, polls).
             queue_update();
         }
@@ -150,6 +174,8 @@ namespace {
                 return;
             }
             std::string error;
+            // The host starts the match from the lobby, once everyone is in and ready.
+            conker::lockstep::set_lobby_mode(true);
             if (!conker::lockstep::begin(conker::netplay::hello_for_rom(rom), error)) {
                 set_state(State::idle, "Couldn't: " + error);
                 return;
@@ -200,6 +226,7 @@ namespace {
                 switch (conker::lockstep::poll_connect(status)) {
                     case conker::lockstep::Progress::waiting:
                         status_label->set_text(status);
+                        lobby_panel->refresh();
                         break;
                     case conker::lockstep::Progress::failed:
                         conker::lockstep::set_host(-1, players);
@@ -245,6 +272,7 @@ namespace {
 
             // Hosting.
             recompui::Element* host = column(this, 12.0f);
+            host_section = host;
             text(host, "Host a match", Typography::LabelLG);
             recompui::Element* host_row = row(host);
             text(host_row, "Players", Typography::LabelMD);
@@ -290,6 +318,7 @@ namespace {
 
             // Joining.
             recompui::Element* join = column(this, 12.0f);
+            join_section = join;
             text(join, "Join a match", Typography::LabelLG);
             recompui::Element* join_row = row(join);
             text(join_row, "Join code", Typography::LabelMD);
@@ -315,6 +344,7 @@ namespace {
 
             // What this window shows of the split screen.
             recompui::Element* display = column(this, 12.0f);
+            display_section = display;
             text(display, "Your screen", Typography::LabelLG);
             recompui::Radio* display_radio = context.create_element<recompui::Radio>(display);
             display_radio->add_option("Split screen");
@@ -325,6 +355,9 @@ namespace {
                 "\"My view only\" shows just yours, across the whole window. When the host's rule for the match is "
                 "that everyone sees only their own view (Screens), that's what you get, whatever you pick here.",
                 Typography::Body, color::TextDim);
+
+            // The lobby, in place of the settings above while connecting.
+            lobby_panel = context.create_element<conker::netplay_lobby::LobbyPanel>(this);
 
             // How it goes.
             recompui::Element* status = row(this);

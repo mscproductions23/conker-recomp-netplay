@@ -19,15 +19,17 @@
 //   --netplay-desync-at <read>   (a test) changes a byte of game memory at that read, which the next
 //                                hash comparison must catch
 //
-// The game waits at its start for every player to join. With --replay, each peer's own pads come from
-// its port in the recording instead of its controller: peers replaying the same recording give the
-// game exactly what a replay alone would (tools/netplay/lockstep.sh tests that).
+// The game waits at its start for every player to join, or in lobby mode (see set_lobby_mode) for the host
+// to start it. With --replay, each peer's own pads come from its port in the recording instead of its
+// controller: peers replaying the same recording give the game exactly what a replay alone would
+// (tools/netplay/lockstep.sh tests that).
 
 #pragma once
 
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "ultramodern/input.hpp"
 
@@ -70,6 +72,21 @@ namespace conker::lockstep {
     // This peer's port and the match's players, once connected.
     int port();
     int players();
+
+    // Lobby mode: the host starts the match by an explicit call, not when the last player joins. Off by
+    // default, which is the command line's and the test's way. Each peer names itself and says if it's ready;
+    // the roster is what everyone has, one entry per port.
+    struct LobbyEntry { bool present = false; bool ready = false; std::string name; };
+    // on: the host starts the match with lobby_start(), not when the last player joins. Set before begin().
+    void set_lobby_mode(bool on);
+    // This peer's name and Ready flag, shown to everyone (does nothing without a session).
+    void set_lobby(const std::string& name, bool ready);
+    // The roster as this peer knows it, one entry per port (empty without a session).
+    std::vector<LobbyEntry> lobby();
+    // Host in lobby mode: every port is taken and every present player is ready (the host's own entry too).
+    bool lobby_can_start();
+    // Host in lobby mode: starts the match now if lobby_can_start(). True if it started.
+    bool lobby_start();
 
     // This peer's own pad for read `for_read`: `live` holds the pads the controllers give now, or is null
     // for the reads before the first (sent at the start, as nobody has played yet).

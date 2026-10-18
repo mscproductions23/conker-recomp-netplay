@@ -33,6 +33,7 @@ namespace conker::netplay {
         constexpr int recv_buffer_bytes = recv_buffer_messages * (int)max_packet_size;
         // The most messages one poll() takes: a flood can't hold the game's thread there.
         constexpr int max_messages_per_poll = 256;
+constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send the host in a second: more is a broken or hostile peer.
 
         // The options for every connection, as the host's listen socket or a joiner's connection.
         struct ConnectionOptions {
@@ -89,6 +90,67 @@ namespace conker::netplay {
                 return (Reason)code;
             }
             return info.m_eState == k_ESteamNetworkingConnectionState_ProblemDetectedLocally ? Reason::timeout : Reason::quit;
+        }
+
+        // Returns a sanitized player name: keeps only printable ASCII characters,
+        // trims spaces, limits to name_size characters, ensures it's not empty,
+        // and provides a default when empty
+        // Sanitizes the input name string
+        std::string sanitise_name(const std::string& raw, int port) {
+            std::string sanitized;
+            sanitized.reserve(raw.size());
+
+            for (char c : raw) {
+                if (static_cast<unsigned char>(c) >= 0x20 && static_cast<unsigned char>(c) <= 0x7E) {
+                    sanitized.push_back(c);
+                }
+            }
+
+            // Trim leading and trailing spaces
+            size_t start = 0;
+            while (start < sanitized.size() && sanitized[start] == ' ') {
+                ++start;
+            }
+            size_t end = sanitized.size();
+            while (end > start && sanitized[end - 1] == ' ') {
+                --end;
+            }
+
+            // Cut to at most name_size characters and trim trailing spaces again
+            if (end - start > name_size) {
+                end = start + name_size;
+                while (end > start && sanitized[end - 1] == ' ') {
+                    --end;
+                }
+            }
+
+            std::string result = sanitized.substr(start, end - start);
+            if (result.empty()) {
+                return port < 0 ? "Player" : "Player " + std::to_string(port + 1);
+            }
+            return result;
+        }
+
+        // Converts a string to a fixed-size array of chars, zeroed, with the
+        // first min(s.size(), name_size) characters copied in
+        std::array<char, name_size> to_array(const std::string& s) {
+            std::array<char, name_size> arr = {};
+            size_t copy_size = std::min(s.size(), name_size);
+            std::copy_n(s.data(), copy_size, arr.data());
+            return arr;
+        }
+
+        // Converts a fixed-size array of chars to a string, stopping at the first
+        // NUL character encountered, or using all characters if no NUL is found
+        std::string to_string_name(const std::array<char, name_size>& a) {
+            size_t end = name_size;
+            for (size_t i = 0; i < name_size; ++i) {
+                if (a[i] == '\0') {
+                    end = i;
+                    break;
+                }
+            }
+            return std::string(a.data(), end);
         }
     }
 
@@ -177,6 +239,8 @@ namespace conker::netplay {
         is_host = true;
         own_port = 0;
         match_players = players;
+        table.assign(players, RosterEntry{});
+        table[0] = RosterEntry{ true, false, sanitise_name(std::string(), 0) };
         return true;
     }
 
@@ -221,6 +285,62 @@ namespace conker::netplay {
             }
         }
         return true;
+    }
+
+    // Sets the lobby name and readiness for this session
+    void Session::set_lobby(const std::string& name, bool ready) {
+        if (started) return;
+        if (is_host && !entry_open) return;
+        lobby_raw = name;
+        lobby_name = sanitise_name(name, own_port);
+        lobby_ready = ready;
+        lobby_set = true;
+        if (is_host) {
+            table[0] = RosterEntry{ true, ready, lobby_name };
+            broadcast_roster();
+            Event event{ Event::Type::roster };
+            pending_events.push_back(std::move(event));
+        } else if (own_port >= 0 && !peers.empty()) {
+            Lobby lobby;
+            lobby.ready = ready ? 1 : 0;
+            lobby.name = to_array(lobby_name);
+            send_to(peers.front().connection, lobby);
+        }
+    }
+
+    // Returns the current roster of players
+    std::vector<RosterEntry> Session::roster() const {
+        return table;
+    }
+
+    // Creates a roster packet for a specific port
+    Roster Session::roster_packet(int port) const {
+        Roster packet;
+        packet.port = port;
+        packet.present = table[port].present ? 1 : 0;
+        packet.ready = table[port].ready ? 1 : 0;
+        packet.name = to_array(table[port].name);
+        return packet;
+    }
+
+    // Broadcasts the current roster to all peers
+    void Session::broadcast_roster() {
+        for (const auto& peer : peers) {
+            if (peer.port >= 0) {
+                for (int p = 0; p < match_players; ++p) {
+                    send_to(peer.connection, roster_packet(p));
+                }
+            }
+        }
+    }
+
+    // Removes a player from the roster
+    void Session::vacate(int port, std::vector<Event>& events) {
+        if (!entry_open || port <= 0) return;
+        table[port] = RosterEntry{};
+        broadcast_roster();
+        Event event{ Event::Type::roster };
+        events.push_back(std::move(event));
     }
 
     std::string Session::join_code(const std::string& address) const {
@@ -276,6 +396,7 @@ namespace conker::netplay {
                     pending_events.push_back(std::move(event));
                 }
                 peers.erase(peers.begin() + (peer - peers.data()));
+                if (is_host) { vacate(event.port, pending_events); }
                 break;
             }
             default:
@@ -369,10 +490,14 @@ namespace conker::netplay {
                 }
                 peer.port = port;
                 send_to(peer.connection, Welcome{ (uint8_t)port, (uint8_t)match_players });
+                table[port] = RosterEntry{ true, false, sanitise_name(std::string(), port) };
+                broadcast_roster();
                 Event event{ Event::Type::joined };
                 event.port = port;
                 event.players = match_players;
                 events.push_back(std::move(event));
+                Event roster_event{ Event::Type::roster };
+                events.push_back(std::move(roster_event));
                 return;
             }
             // Inputs and hashes only once the match has started (before, a player can still leave and
@@ -408,6 +533,27 @@ namespace conker::netplay {
                 SteamNetworkingSockets()->CloseConnection(peer.connection, 0, nullptr, false);
                 peers.erase(peers.begin() + (&peer - peers.data()));
                 events.push_back(std::move(event));
+                vacate(event.port, events);
+                return;
+            }
+            else if (const Lobby* lobby = std::get_if<Lobby>(&packet)) {
+                if (!entry_open) {
+                    drop(peer, Reason::protocol, &events);
+                    return;
+                }
+                const double t = now();
+                if (t - peer.lobby_window >= 1.0) {
+                    peer.lobby_window = t;
+                    peer.lobby_count = 0;
+                }
+                if (++peer.lobby_count > max_lobbies_per_second) {
+                    drop(peer, Reason::protocol, &events);
+                    return;
+                }
+                table[peer.port] = RosterEntry{ true, lobby->ready != 0, sanitise_name(to_string_name(lobby->name), peer.port) };
+                broadcast_roster();
+                Event event{ Event::Type::roster };
+                events.push_back(std::move(event));
                 return;
             }
             else if (!std::holds_alternative<Hash>(packet)) {
@@ -426,10 +572,19 @@ namespace conker::netplay {
             if (const Welcome* welcome = std::get_if<Welcome>(&packet)) {
                 own_port = welcome->port;
                 match_players = welcome->players;
+                table.assign(match_players, RosterEntry{});
                 Event event{ Event::Type::welcomed };
                 event.port = own_port;
                 event.players = match_players;
                 events.push_back(std::move(event));
+                if (lobby_set) {
+                    // A blank name gets the port's number now that it's known.
+                    lobby_name = sanitise_name(lobby_raw, own_port);
+                    Lobby lobby;
+                    lobby.ready = lobby_ready ? 1 : 0;
+                    lobby.name = to_array(lobby_name);
+                    send_to(peer.connection, lobby);
+                }
             }
             else if (std::holds_alternative<Refuse>(packet) || std::holds_alternative<Bye>(packet)) {
                 // Refused, or dropped before being welcomed (the host's handshake time ran out): with why.
@@ -484,12 +639,22 @@ namespace conker::netplay {
             peers.clear();
             events.push_back(std::move(event));
         }
+        else if (const Roster* entry = std::get_if<Roster>(&packet); entry != nullptr) {
+            if (started || entry->port >= match_players) {
+                drop(peer, Reason::protocol, &events);
+                return;
+            }
+            table[entry->port] = RosterEntry{ entry->present != 0, entry->ready != 0, to_string_name(entry->name) };
+            Event event{ Event::Type::roster };
+            events.push_back(std::move(event));
+        }
         else {
             drop(peer, Reason::protocol, &events);
         }
     }
 
     void Session::drop(Peer& peer, Reason reason, std::vector<Event>* events) {
+        const int port = peer.port;
         send_to(peer.connection, Bye{ reason });
         SteamNetworkingSockets()->CloseConnection(peer.connection, k_ESteamNetConnectionEnd_App_Min + (int)reason,
             describe(reason), true);
@@ -500,6 +665,9 @@ namespace conker::netplay {
             events->push_back(std::move(event));
         }
         peers.erase(peers.begin() + (&peer - peers.data()));
+        if (is_host && events != nullptr) {
+            vacate(port, *events);
+        }
     }
 
     // Everything is sent reliably (resent until it arrives, in order), and at once: lockstep needs every
@@ -532,11 +700,12 @@ namespace conker::netplay {
     }
 
     void Session::leave(Reason reason) {
+        // Nobody more is let in while the session goes
+        entry_open = false;
+        // The listen socket stays open (nobody more is let in) until the session goes: closing it closes
+        // every connection accepted on it at once, goodbyes not yet sent and all.
         while (!peers.empty()) {
             drop(peers.back(), reason, nullptr);
         }
-        // The listen socket stays open (nobody more is let in) until the session goes: closing it closes
-        // every connection accepted on it at once, goodbyes not yet sent and all.
-        entry_open = false;
     }
 }

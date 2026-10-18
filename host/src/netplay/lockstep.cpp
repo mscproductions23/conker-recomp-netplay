@@ -54,6 +54,7 @@ namespace {
     int delay = 2;
     uint64_t desync_at = never;
     bool options_valid = true;
+    bool lobby_mode = false;    // the host starts the match with lobby_start(), not when the last player joins
 
     bool library_started = false;
     conker::netplay::Session* session = nullptr;
@@ -145,6 +146,7 @@ namespace {
     void handle(const Event& event) {
         switch (event.type) {
             case Event::Type::joined:
+            case Event::Type::roster:
             case Event::Type::welcomed:
             case Event::Type::started:
                 break;
@@ -408,7 +410,7 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
             case Event::Type::joined:
                 joined++;
                 std::printf("[netplay] port %d joined (%d of %d)\n", event.port + 1, joined, match_players);
-                if (joined == match_players && session->start(host_own_view)) {
+                if (!lobby_mode && joined == match_players && session->start(host_own_view)) {
                     match_started = true;
                     match_own_view = host_own_view;
                 }
@@ -428,6 +430,8 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
             case Event::Type::started:
                 match_started = true;
                 match_own_view = event.own_view;
+                break;
+            case Event::Type::roster:
                 break;
             case Event::Type::ended:
                 std::printf("[netplay] couldn't join: %s (%s)\n", netplay::describe(event.reason), event.detail.c_str());
@@ -510,6 +514,60 @@ int conker::lockstep::port() {
 
 int conker::lockstep::players() {
     return match_players;
+}
+
+void conker::lockstep::set_lobby_mode(bool on) {
+    std::scoped_lock lock(session_mutex);
+    lobby_mode = on;
+}
+
+void conker::lockstep::set_lobby(const std::string& name, bool ready) {
+    std::scoped_lock lock(session_mutex);
+    if (session != nullptr) {
+        session->set_lobby(name, ready);
+    }
+}
+
+std::vector<conker::lockstep::LobbyEntry> conker::lockstep::lobby() {
+    std::scoped_lock lock(session_mutex);
+    std::vector<LobbyEntry> entries;
+    if (session == nullptr) {
+        return entries;
+    }
+    for (const netplay::RosterEntry& entry : session->roster()) {
+        entries.push_back({ entry.present, entry.ready, entry.name });
+    }
+    return entries;
+}
+
+bool conker::lockstep::lobby_can_start() {
+    std::scoped_lock lock(session_mutex);
+    if (session == nullptr || !session->hosting() || !lobby_mode) {
+        return false;
+    }
+    const std::vector<netplay::RosterEntry> roster = session->roster();
+    if ((int)roster.size() != match_players) {
+        return false;
+    }
+    for (const netplay::RosterEntry& entry : roster) {
+        if (!entry.present || !entry.ready) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool conker::lockstep::lobby_start() {
+    std::scoped_lock lock(session_mutex);
+    if (!lobby_can_start()) {
+        return false;
+    }
+    if (session->start(host_own_view)) {
+        match_started = true;
+        match_own_view = host_own_view;
+        return true;
+    }
+    return false;
 }
 
 bool conker::lockstep::own_view_for_everyone() {

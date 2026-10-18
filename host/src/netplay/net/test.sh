@@ -4,7 +4,7 @@
 # lost, which also tests the host passing inputs on), joiners with another match's key, another ROM or
 # other mods, which must be refused, joiners sending Inputs early or far ahead or a Hash twice, which
 # must be dropped, one that never says Hello, which must be dropped too, and one sending a message bigger
-# than any packet, which the library must close.
+# than any packet, which the library must close; and the lobby (names, Ready, the roster, the host's start).
 #   sh host/src/netplay/net/test.sh <build folder>
 set -u
 bin=$1
@@ -117,6 +117,24 @@ raw() {
 }
 raw silent 27203 --silent
 raw oversize 27209 --oversize
+
+# The lobby: a host and two joiners, one after the other (the library keeps one session per process, so each
+# is a copy of lobby_test). Names, Ready, a name cleaned, a joiner flooding the lobby dropped, the host's start.
+lobby() {
+    "$bin/lobby_test" host 27210 > lobby.host.txt 2>&1 &
+    host=$!
+    to=$(code_of lobby.host.txt)
+    ok=1
+    "$bin/lobby_test" join "$to" first > lobby.join1.txt 2>&1 || ok=0
+    "$bin/lobby_test" join "$to" second > lobby.join2.txt 2>&1 || ok=0
+    wait $host || ok=0
+    for f in lobby.*.txt; do
+        echo "-- $f"
+        grep -v '^\[netplay\]' "$f"
+    done
+    if [ $ok -eq 1 ]; then echo "lobby: passed"; else echo "lobby: FAILED"; failed=1; fi
+}
+lobby
 
 [ $failed -eq 0 ] && echo "all passed" || echo "FAILED"
 exit $failed
