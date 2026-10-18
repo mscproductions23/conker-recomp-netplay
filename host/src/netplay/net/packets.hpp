@@ -3,9 +3,10 @@
 // checks every field: anything else is refused whole.
 //
 // Peers send inputs only: each its own port's pads (the host passes them on to the others), the hashes
-// of the game's memory for the desync check, and the handshake. Never files, mods or save states.
-//
-// The layout, little-endian: "CN", u16 version, u8 kind, then the kind's fields (see packets.cpp).
+// of the game's memory for the desync check, and the handshake. Never files, mods or save states. In
+// the lobby, peers send their name, readiness, controller family, and live pad reads (the LobbyPad
+// packets), and the host sends ping and jitter (Ping, Pong). The layout, little-endian: "CN", u16 version,
+// u8 kind, then the kind's fields (see packets.cpp).
 
 #pragma once
 
@@ -18,7 +19,7 @@
 
 namespace conker::netplay {
     // Changes whenever any packet's layout or meaning does: peers with another one are refused.
-    constexpr uint16_t protocol_version = 5;
+    constexpr uint16_t protocol_version = 6;
     // The game's controller ports.
     constexpr int max_players = 4;
     // The most reads an Inputs packet carries: a peer catching up can send several at once. (Inputs are
@@ -105,6 +106,7 @@ namespace conker::netplay {
     struct Start {
         uint8_t players = 0;
         uint8_t own_view = 0;
+        uint8_t delay = 2; // the input delay the match starts with, in reads (0 to 8)
         bool operator==(const Start&) const = default;
     };
     // Leaving, and why.
@@ -116,6 +118,7 @@ namespace conker::netplay {
     // Peer to host, in the lobby before the match starts: this peer's name and whether it is ready (0 or 1).
     struct Lobby {
         uint8_t ready = 0;
+        uint8_t controller = 0;
         std::array<char, name_size> name{};   // the name: 1 to 16 characters, see valid_name
         bool operator==(const Lobby&) const = default;
     };
@@ -125,11 +128,33 @@ namespace conker::netplay {
         uint8_t port = 0;
         uint8_t present = 0;
         uint8_t ready = 0;
+        uint8_t controller = 0;
+        uint16_t ping_ms = 0;
+        uint16_t jitter_ms = 0;
         std::array<char, name_size> name{};   // the name (all NUL for nobody there): see valid_name
         bool operator==(const Roster&) const = default;
     };
 
-    using Packet = std::variant<Hello, Welcome, Refuse, Inputs, Hash, Bye, Start, Lobby, Roster>;
+    // A player's controller pad in the lobby.
+    struct LobbyPad {
+        uint8_t port = 0;
+        Pad pad;
+        bool operator==(const LobbyPad&) const = default;
+    };
+
+    // Host to joiner: a ping with a sequence number.
+    struct Ping {
+        uint32_t seq = 0;
+        bool operator==(const Ping&) const = default;
+    };
+
+    // Joiner to host: the reply to a ping with the same sequence number.
+    struct Pong {
+        uint32_t seq = 0;
+        bool operator==(const Pong&) const = default;
+    };
+
+    using Packet = std::variant<Hello, Welcome, Refuse, Inputs, Hash, Bye, Start, Lobby, Roster, LobbyPad, Ping, Pong>;
 
     // Writes `packet` into `out` and returns its size, or 0 if the packet isn't valid (the same checks
     // as decode's), so nothing invalid is ever sent.

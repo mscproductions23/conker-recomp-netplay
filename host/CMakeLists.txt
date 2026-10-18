@@ -207,7 +207,12 @@ if (CONKER_RT64)
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
     if (CONKER_NETPLAY)
         # The launcher's Netplay menu.
-        target_sources(ConkerRecomp PRIVATE src/netplay/menu.cpp src/netplay/lobby.cpp src/netplay/view.cpp)
+        target_sources(ConkerRecomp PRIVATE src/netplay/menu.cpp src/netplay/lobby.cpp src/netplay/view.cpp
+            src/netplay/addresses.cpp src/netplay/settings.cpp src/netplay/diag.cpp)
+        if (WIN32)
+            # This computer's addresses (src/netplay/addresses.cpp: GetAdaptersAddresses).
+            target_link_libraries(ConkerRecomp PRIVATE iphlpapi ws2_32)
+        endif()
     endif()
     if (WIN32)
         target_compile_definitions(ConkerRecomp PRIVATE NOMINMAX)

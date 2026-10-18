@@ -11,7 +11,9 @@
 // port 0) with Welcome. The host calls start() when it decides to (lockstep's lobby: when everyone is ready; or at once, for the command line), and the match starts (Start). Then each peer sends its own port's pads (Inputs) and memory hashes (Hash) to
 // the host, which passes Inputs on to the others: the host is the hub, so joiners only ever connect to
 // it. A peer that sends anything else (another port's inputs, a second Hello) is dropped.
-// Before the start, each joiner sends its name and whether it is ready (Lobby); the host keeps the roster of every port and sends it to every joiner (Roster).
+// Before the start, each joiner sends its name, readiness, and controller family (Lobby); the host keeps the roster of every port and sends it to every joiner (Roster).
+// In the lobby, the host pings joiners once a second before the start (Ping/Pong) and measures their
+// ping and jitter for the roster. The host forwards the joiners' pads to the others (LobbyPad); joiners send their own pads to the host. The start's input delay (Start) is also carried in the packet.
 //
 // Single-threaded: call poll() often (each controller read, or in a loop) from one thread; it runs the
 // library's callbacks and returns what happened.
@@ -33,12 +35,14 @@ namespace conker::netplay {
             packet,     // `packet` arrived (Inputs or Hash), from `port`'s peer (via the host for a joiner)
             left,       // host: `port`'s peer left or was dropped, for `reason`
             ended,      // joiner: refused, or the connection to the host ended, for `reason`
-            roster,  // the lobby's roster changed (host: someone joined, left or changed; joiner: a Roster packet arrived). Read it with roster().
+            roster,     // the lobby's roster changed (host: someone joined, left or changed; joiner: a Roster packet arrived). Read it with roster().
+            refused     // host: a joiner was refused by the handshake; `reason` says why
         };
         Type type;
         int port = -1;
         int players = 0;
         bool own_view = false;  // started: the host's rule that every player sees only their own view
+        int delay = 2;          // started: the input delay the match starts with, in reads (0 to 8)
         Reason reason = Reason::quit;
         std::string detail;     // the library's account of a closed connection, for the log
         Packet packet;
@@ -53,11 +57,16 @@ namespace conker::netplay {
     void shutdown();
 
     // One port's player in the lobby, as the host knows it, or as a joiner was last told it: present (a
-    // player is there), ready, and the name.
+    // player is there), ready, the name, controller family, ping/jitter (ms), and pad (seen or not).
     struct RosterEntry {
         bool present = false;
         bool ready = false;
         std::string name;
+        uint8_t controller = 0;
+        uint16_t ping_ms = 0;
+        uint16_t jitter_ms = 0;
+        Pad pad{};
+        bool pad_seen = false;
     };
 
     class Session {
@@ -75,13 +84,15 @@ namespace conker::netplay {
         // Joins the host by its join code (`me`'s key is the code's).
         bool join(const std::string& code, const Hello& me, std::string& error);
         // Host: once every port is taken (false until then), starts the match: tells the joiners, and
-        // refuses any more. `own_view`: every player sees only their own view (the match's rule).
-        bool start(bool own_view = false);
-        // Before the match starts: this peer's name and whether it is ready, for the lobby. The name is cut to
-        // 16 printable characters (anything else is dropped), or "Player N" (N the port + 1) if none is left.
+        // refuses any more. `own_view`: every player sees only their own view (the match's rule). `delay`: the input delay the match starts with, in reads (0 to 8).
+        bool start(bool own_view = false, int delay = 2);
+        // Before the match starts: this peer's name, whether it is ready, and its controller family, for the lobby.
+        // The name is cut to 16 printable characters (anything else is dropped), or "Player N" (N the port + 1) if none is left.
         // The host sends the roster to every joiner (and pushes a roster event); a joiner sends it to the host.
         // After Start, nothing.
-        void set_lobby(const std::string& name, bool ready);
+        void set_lobby(const std::string& name, bool ready, uint8_t controller = 0);
+        // Sends this peer's pad to the lobby (the caller limits how often it's called; Session does not).
+        void send_lobby_pad(const Pad& pad);
         // The lobby's roster: one entry per port (match_players of them), the host's own table or a joiner's
         // last one from the host. Empty before the joiner is welcomed.
         std::vector<RosterEntry> roster() const;
@@ -113,6 +124,16 @@ namespace conker::netplay {
             int64_t last_hash = -1; // the read of the last Hash from it (one per read, in order)
             double lobby_window = 0; // the start of this peer's current second of Lobby packets
             int lobby_count = 0; // the Lobby packets it has sent in that second
+            uint32_t ping_seq = 0;       // the seq of the last Ping sent to it
+            double ping_sent_at = 0;     // when that Ping was sent (now())
+            double rtt_samples[8] = {};  // ring of the last 8 round trips, in ms
+            int rtt_count = 0;           // samples held (up to 8)
+            int rtt_next = 0;            // next ring slot to write
+            bool rtt_sent = false;       // a roster broadcast has carried this peer's ping/jitter
+            double pong_window = 0;      // the start of this peer's current second of Pong packets
+            int pong_count = 0;          // the Pong packets it has sent in that second
+            double pad_window = 0;       // the start of this peer's current second of LobbyPad packets
+            int pad_count = 0;           // the LobbyPad packets it has sent in that second
         };
 
         void on_status_changed(const void* info);
@@ -140,11 +161,17 @@ namespace conker::netplay {
         std::vector<Peer> peers;            // host: everyone connected; joiner: the host
         std::vector<Event> pending_events;  // from the status callback, until the next poll
         // Lobby: the table (host: the roster; joiner: the host's last Roster for each port), and this peer's
-        // own name and ready flag as set_lobby gave them (sent once welcomed, if set).
+        // own name, ready flag, and controller family as set_lobby gave them (sent once welcomed, if set).
         std::vector<RosterEntry> table;
         std::string lobby_raw;      // the name as given, before it's cleaned (a blank one gets "Player N" once the port is known)
         std::string lobby_name;
         bool lobby_ready = false;
+        uint8_t lobby_controller = 0; // the controller family set_lobby gave (for the Lobby packet)
         bool lobby_set = false;
+        uint32_t ping_counter = 0;   // the seq of the last Ping sent (host); the first Ping is 1
+        double last_ping_at = 0;     // host: when Pings were last sent to the joiners (every second, at most)
+        double last_roster_at = 0;   // when the roster was last broadcast (host)
+        std::vector<int> sent_ping;  // the ping_ms each port had in the last broadcast (host)
+        std::vector<int> sent_jitter;// the jitter_ms each port had in the last broadcast (host)
     };
 }

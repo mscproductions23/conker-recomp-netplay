@@ -10,9 +10,12 @@
 //              and the last read not past 2^32 - 1
 //   5 Hash     u32 read, u64 hash                                                     17 bytes
 //   6 Bye      u8 reason                                                               6 bytes
-//   7 Start    u8 players (2 to 4), u8 own view (0 or 1)                               7 bytes
-//   8 Lobby    u8 ready (0 or 1), 16 name bytes (see valid_name)                       22 bytes
-//   9 Roster   u8 port (< 4), u8 present (0 or 1), u8 ready (0 or 1), 16 name bytes    24 bytes
+//   7 Start    u8 players (2 to 4), u8 own view (0 or 1), u8 delay (0 to 8)             8 bytes
+//   8 Lobby    u8 ready (0 or 1), u8 controller (0 to 3), 16 name bytes                23 bytes
+//   9 Roster   u8 port (< 4), u8 present (0 or 1), u8 ready (0 or 1), u8 controller (0 to 3), u16 ping ms, u16 jitter ms, 16 name bytes  29 bytes
+//  10 LobbyPad u8 port (< 4), u16 buttons, s8 stick x, s8 stick y                      10 bytes
+//  11 Ping     u32 seq                                                                  9 bytes
+//  12 Pong     u32 seq                                                                  9 bytes
 // A packet of any other size, version or kind, or with any field out of range, is refused.
 
 #include "packets.hpp"
@@ -21,7 +24,7 @@
 
 namespace conker::netplay {
     namespace {
-        enum Kind : uint8_t { hello = 1, welcome, refuse, inputs, hash, bye, start, lobby, roster };
+        enum Kind : uint8_t { hello = 1, welcome, refuse, inputs, hash, bye, start, lobby, roster, lobby_pad, ping, pong };
         constexpr size_t header_size = 5;
         constexpr size_t pad_size = 5;
 
@@ -33,9 +36,12 @@ namespace conker::netplay {
                 case inputs: return header_size + 6 + input_window * pad_size;
                 case hash: return header_size + 12;
                 case bye: return header_size + 1;
-                case start: return header_size + 2;
-                case lobby: return header_size + 1 + name_size;
-                case roster: return header_size + 3 + name_size;
+                case start: return header_size + 3;
+                case lobby: return header_size + 2 + name_size;
+                case roster: return header_size + 8 + name_size;
+                case lobby_pad: return header_size + 5;
+                case ping: return header_size + 4;
+                case pong: return header_size + 4;
             }
             return 0;
         }
@@ -84,16 +90,25 @@ namespace conker::netplay {
             return valid_reason(p.reason);
         }
         bool valid_fields(const Start& p) {
-            return p.players >= 2 && p.players <= max_players && p.own_view <= 1;
+            return p.players >= 2 && p.players <= max_players && p.own_view <= 1 && p.delay <= 8;
         }
 
         bool valid_fields(const Lobby& p) {
-            return p.ready <= 1 && valid_name(p.name);
+            return p.ready <= 1 && p.controller <= 3 && valid_name(p.name);
         }
 
         bool valid_fields(const Roster& p) {
-            return p.port < max_players && p.present <= 1 && p.ready <= 1 &&
-                   (p.present == 0 ? (p.ready == 0 && all_nul(p.name)) : valid_name(p.name));
+            return p.port < max_players && p.present <= 1 && p.ready <= 1 && p.controller <= 3 &&
+                   (p.present == 0 ? (p.ready == 0 && p.controller == 0 && p.ping_ms == 0 && p.jitter_ms == 0 && all_nul(p.name)) : valid_name(p.name));
+        }
+        bool valid_fields(const LobbyPad& p) {
+            return p.port < max_players && valid(p.pad) && p.pad.err_no == 0;
+        }
+        bool valid_fields(const Ping&) {
+            return true;
+        }
+        bool valid_fields(const Pong&) {
+            return true;
         }
 
         bool valid_packet(const Packet& packet) {
@@ -212,16 +227,33 @@ namespace conker::netplay {
             else if constexpr (std::is_same_v<T, Start>) {
                 w.u8(p.players);
                 w.u8(p.own_view);
+                w.u8(p.delay);
             }
             else if constexpr (std::is_same_v<T, Lobby>) {
                 w.u8(p.ready);
+                w.u8(p.controller);
                 w.name(p.name);
             }
             else if constexpr (std::is_same_v<T, Roster>) {
                 w.u8(p.port);
                 w.u8(p.present);
                 w.u8(p.ready);
+                w.u8(p.controller);
+                w.u16(p.ping_ms);
+                w.u16(p.jitter_ms);
                 w.name(p.name);
+            }
+            else if constexpr (std::is_same_v<T, LobbyPad>) {
+                w.u8(p.port);
+                w.u16(p.pad.buttons);
+                w.u8(p.pad.stick_x);
+                w.u8(p.pad.stick_y);
+            }
+            else if constexpr (std::is_same_v<T, Ping>) {
+                w.u32(p.seq);
+            }
+            else if constexpr (std::is_same_v<T, Pong>) {
+                w.u32(p.seq);
             }
         }, packet);
         return (size_t)(w.at - out.data());
@@ -283,32 +315,56 @@ namespace conker::netplay {
             case bye:
                 packet = Bye{ (Reason)r.u8() };
                 break;
-            case start:
-                {
-                    Start p;
-                    p.players = r.u8();
-                    p.own_view = r.u8();
-                    packet = p;
-                }
+            case start: {
+                Start p;
+                p.players = r.u8();
+                p.own_view = r.u8();
+                p.delay = r.u8();
+                packet = p;
                 break;
-            case lobby:
-                {
-                    Lobby p;
-                    p.ready = r.u8();
-                    p.name = r.name();
-                    packet = p;
-                }
+            }
+            case lobby: {
+                Lobby p;
+                p.ready = r.u8();
+                p.controller = r.u8();
+                p.name = r.name();
+                packet = p;
                 break;
-            case roster:
-                {
-                    Roster p;
-                    p.port = r.u8();
-                    p.present = r.u8();
-                    p.ready = r.u8();
-                    p.name = r.name();
-                    packet = p;
-                }
+            }
+            case roster: {
+                Roster p;
+                p.port = r.u8();
+                p.present = r.u8();
+                p.ready = r.u8();
+                p.controller = r.u8();
+                p.ping_ms = r.u16();
+                p.jitter_ms = r.u16();
+                p.name = r.name();
+                packet = p;
                 break;
+            }
+            case lobby_pad: {
+                LobbyPad p;
+                p.port = r.u8();
+                p.pad.buttons = r.u16();
+                p.pad.stick_x = (int8_t)r.u8();
+                p.pad.stick_y = (int8_t)r.u8();
+                p.pad.err_no = 0;
+                packet = p;
+                break;
+            }
+            case ping: {
+                Ping p;
+                p.seq = r.u32();
+                packet = p;
+                break;
+            }
+            case pong: {
+                Pong p;
+                p.seq = r.u32();
+                packet = p;
+                break;
+            }
         }
         if (!valid_packet(packet)) {
             return std::nullopt;

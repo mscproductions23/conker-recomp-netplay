@@ -118,7 +118,7 @@ raw() {
 raw silent 27203 --silent
 raw oversize 27209 --oversize
 
-# The lobby: a host and two joiners, one after the other (the library keeps one session per process, so each
+# The lobby: a host and three joiners, one after the other (the library keeps one session per process, so each
 # is a copy of lobby_test). Names, Ready, a name cleaned, a joiner flooding the lobby dropped, the host's start.
 lobby() {
     "$bin/lobby_test" host 27210 > lobby.host.txt 2>&1 &
@@ -126,6 +126,7 @@ lobby() {
     to=$(code_of lobby.host.txt)
     ok=1
     "$bin/lobby_test" join "$to" first > lobby.join1.txt 2>&1 || ok=0
+    "$bin/lobby_test" join "$to" refused > lobby.join3.txt 2>&1 || ok=0
     "$bin/lobby_test" join "$to" second > lobby.join2.txt 2>&1 || ok=0
     wait $host || ok=0
     for f in lobby.*.txt; do

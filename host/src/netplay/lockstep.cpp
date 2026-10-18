@@ -8,10 +8,12 @@
 
 #include "lockstep.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,6 +54,7 @@ namespace {
     bool host_own_view = true;      // hosting: the rule this peer will start the match with
     bool match_own_view = false;    // the rule of the match under way
     int delay = 2;
+    int delay_override = 0;     // host: the input delay the host chose (0: automatic, see chosen_delay)
     uint64_t desync_at = never;
     bool options_valid = true;
     bool lobby_mode = false;    // the host starts the match with lobby_start(), not when the last player joins
@@ -64,6 +67,7 @@ namespace {
     bool ended = false;         // the match is over for this peer: nothing more is sent
     bool left = false;
     std::string why_over;       // why the match ended, for the player
+    std::string lobby_notice_text;  // a player was refused: the notice for the menu, until lobby_notice reads it
 
     std::array<std::vector<Pad>, conker::netplay::max_players> received;
     std::array<bool, conker::netplay::max_players> gone{};
@@ -149,6 +153,7 @@ namespace {
             case Event::Type::roster:
             case Event::Type::welcomed:
             case Event::Type::started:
+            case Event::Type::refused:
                 break;
             case Event::Type::left:
                 std::printf("[netplay] port %d left: %s\n", event.port + 1, conker::netplay::describe(event.reason));
@@ -372,6 +377,7 @@ bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
     left = false;
     current_read = 0;
     match_own_view = false;
+    delay_override = 0;
     why_over.clear();
     initial_sent = false;
     for (auto& pads : received) pads.clear();
@@ -430,6 +436,11 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
             case Event::Type::started:
                 match_started = true;
                 match_own_view = event.own_view;
+                delay = event.delay;
+                break;
+            case Event::Type::refused:
+                lobby_notice_text = std::string("A player was refused: ") + netplay::describe(event.reason) + ".";
+                std::printf("[netplay] a player was refused: %s\n", netplay::describe(event.reason));
                 break;
             case Event::Type::roster:
                 break;
@@ -521,10 +532,10 @@ void conker::lockstep::set_lobby_mode(bool on) {
     lobby_mode = on;
 }
 
-void conker::lockstep::set_lobby(const std::string& name, bool ready) {
+void conker::lockstep::set_lobby(const std::string& name, bool ready, uint8_t controller) {
     std::scoped_lock lock(session_mutex);
     if (session != nullptr) {
-        session->set_lobby(name, ready);
+        session->set_lobby(name, ready, controller);
     }
 }
 
@@ -535,7 +546,16 @@ std::vector<conker::lockstep::LobbyEntry> conker::lockstep::lobby() {
         return entries;
     }
     for (const netplay::RosterEntry& entry : session->roster()) {
-        entries.push_back({ entry.present, entry.ready, entry.name });
+        LobbyEntry lobby_entry;
+        lobby_entry.present = entry.present;
+        lobby_entry.ready = entry.ready;
+        lobby_entry.name = entry.name;
+        lobby_entry.controller = entry.controller;
+        lobby_entry.ping_ms = entry.ping_ms;
+        lobby_entry.jitter_ms = entry.jitter_ms;
+        lobby_entry.pad = entry.pad;
+        lobby_entry.pad_seen = entry.pad_seen;
+        entries.push_back(lobby_entry);
     }
     return entries;
 }
@@ -562,12 +582,62 @@ bool conker::lockstep::lobby_start() {
     if (!lobby_can_start()) {
         return false;
     }
-    if (session->start(host_own_view)) {
+    const int chosen = chosen_delay();
+    if (session->start(host_own_view, chosen)) {
+        delay = chosen;
         match_started = true;
         match_own_view = host_own_view;
         return true;
     }
     return false;
+}
+
+void conker::lockstep::send_lobby_pad(const netplay::Pad& pad) {
+    std::scoped_lock lock(session_mutex);
+    if (session != nullptr) {
+        session->send_lobby_pad(pad);
+    }
+}
+
+// Host: the input delay (reads) the roster's pings call for. The game makes 30 controller reads a second
+// (33.3 ms each). worst_rtt and worst_jitter are the largest ping_ms and jitter_ms over the present entries
+// with a ping (an entry with ping 0 has none yet). With none, 2. Otherwise one-way = worst_rtt / 2.0 + worst_jitter;
+// delay = ceil(one_way / 33.3) + 1, clamped to 2..8.
+int conker::lockstep::recommended_delay() {
+    std::scoped_lock lock(session_mutex);
+    if (session == nullptr) {
+        return 2;
+    }
+    int worst_rtt = 0;
+    int worst_jitter = 0;
+    bool any = false;
+    for (const netplay::RosterEntry& entry : session->roster()) {
+        if (!entry.present || entry.ping_ms == 0) continue;
+        any = true;
+        worst_rtt = std::max(worst_rtt, (int)entry.ping_ms);
+        worst_jitter = std::max(worst_jitter, (int)entry.jitter_ms);
+    }
+    if (!any) return 2;
+    const double one_way = worst_rtt / 2.0 + worst_jitter;
+    const int delay_reads = (int)std::ceil(one_way / 33.3) + 1;
+    return std::clamp(delay_reads, 2, 8);
+}
+
+void conker::lockstep::set_delay_override(int reads) {
+    std::scoped_lock lock(session_mutex);
+    delay_override = reads < 0 ? 0 : (reads > 8 ? 8 : reads);
+}
+
+int conker::lockstep::chosen_delay() {
+    std::scoped_lock lock(session_mutex);
+    return delay_override != 0 ? delay_override : recommended_delay();
+}
+
+std::string conker::lockstep::lobby_notice() {
+    std::scoped_lock lock(session_mutex);
+    std::string text = lobby_notice_text;
+    lobby_notice_text.clear();
+    return text;
 }
 
 bool conker::lockstep::own_view_for_everyone() {

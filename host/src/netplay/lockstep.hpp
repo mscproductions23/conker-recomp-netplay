@@ -76,17 +76,38 @@ namespace conker::lockstep {
     // Lobby mode: the host starts the match by an explicit call, not when the last player joins. Off by
     // default, which is the command line's and the test's way. Each peer names itself and says if it's ready;
     // the roster is what everyone has, one entry per port.
-    struct LobbyEntry { bool present = false; bool ready = false; std::string name; };
+    // A port's entry: the name, Ready flag and controller, the ping and jitter in ms (the host's view of
+    // this peer's connection, 0 until measured), and the last pad this peer sent in the lobby.
+    struct LobbyEntry {
+        bool present = false;
+        bool ready = false;
+        std::string name;
+        uint8_t controller = 0;
+        int ping_ms = 0;
+        int jitter_ms = 0;
+        netplay::Pad pad{};
+        bool pad_seen = false;
+    };
     // on: the host starts the match with lobby_start(), not when the last player joins. Set before begin().
     void set_lobby_mode(bool on);
     // This peer's name and Ready flag, shown to everyone (does nothing without a session).
-    void set_lobby(const std::string& name, bool ready);
+    void set_lobby(const std::string& name, bool ready, uint8_t controller = 0);
+    // This peer's pad, sent in the lobby (does nothing without a session).
+    void send_lobby_pad(const netplay::Pad& pad);
     // The roster as this peer knows it, one entry per port (empty without a session).
     std::vector<LobbyEntry> lobby();
     // Host in lobby mode: every port is taken and every present player is ready (the host's own entry too).
     bool lobby_can_start();
     // Host in lobby mode: starts the match now if lobby_can_start(). True if it started.
     bool lobby_start();
+    // Host: the input delay, in reads, that the roster's pings call for (2 with no pings yet).
+    int recommended_delay();
+    // Host's choice of the input delay: 0 is automatic (recommended_delay()), 1 to 8 forces that many reads.
+    void set_delay_override(int reads);
+    // The input delay the host will start with: the override if set, else recommended_delay().
+    int chosen_delay();
+    // A notice for the menu about a refused player (empty if none), cleared once read.
+    std::string lobby_notice();
 
     // This peer's own pad for read `for_read`: `live` holds the pads the controllers give now, or is null
     // for the reads before the first (sent at the start, as nobody has played yet).

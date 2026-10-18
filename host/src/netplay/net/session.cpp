@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <climits>
+#include <cmath>
+#include <cstdlib>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -33,7 +36,9 @@ namespace conker::netplay {
         constexpr int recv_buffer_bytes = recv_buffer_messages * (int)max_packet_size;
         // The most messages one poll() takes: a flood can't hold the game's thread there.
         constexpr int max_messages_per_poll = 256;
-constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send the host in a second: more is a broken or hostile peer.
+        constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send the host in a second: more is a broken or hostile peer.
+        constexpr int max_pongs_per_second = 20;   // Pong packets one joiner may send the host in a second: more is a broken or hostile peer.
+        constexpr int max_lobby_pads_per_second = 40;  // LobbyPad packets one joiner may send the host in a second: more is a broken or hostile peer.
 
         // The options for every connection, as the host's listen socket or a joiner's connection.
         struct ConnectionOptions {
@@ -240,7 +245,9 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
         own_port = 0;
         match_players = players;
         table.assign(players, RosterEntry{});
-        table[0] = RosterEntry{ true, false, sanitise_name(std::string(), 0) };
+        table[0] = RosterEntry{ true, false, sanitise_name(std::string(), 0), 0, 0, 0, Pad{}, false };
+        sent_ping.assign(players, 0);
+        sent_jitter.assign(players, 0);
         return true;
     }
 
@@ -273,7 +280,7 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
         return true;
     }
 
-    bool Session::start(bool own_view) {
+    bool Session::start(bool own_view, int delay) {
         const int joined = (int)std::count_if(peers.begin(), peers.end(), [](const Peer& p) { return p.port >= 0; });
         if (!is_host || !entry_open || joined + 1 != match_players) {
             return false;
@@ -281,30 +288,53 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
         entry_open = false;
         for (const Peer& peer : peers) {
             if (peer.port >= 0) {
-                send_to(peer.connection, Start{ (uint8_t)match_players, (uint8_t)(own_view ? 1 : 0) });
+                send_to(peer.connection, Start{ (uint8_t)match_players, (uint8_t)(own_view ? 1 : 0), (uint8_t)std::clamp(delay, 0, 8) });
             }
         }
         return true;
     }
 
-    // Sets the lobby name and readiness for this session
-    void Session::set_lobby(const std::string& name, bool ready) {
+    // Sets the lobby name, readiness, and controller family for this session
+    void Session::set_lobby(const std::string& name, bool ready, uint8_t controller) {
         if (started) return;
         if (is_host && !entry_open) return;
         lobby_raw = name;
         lobby_name = sanitise_name(name, own_port);
         lobby_ready = ready;
+        lobby_controller = controller <= 3 ? controller : 0;
         lobby_set = true;
         if (is_host) {
-            table[0] = RosterEntry{ true, ready, lobby_name };
+            table[0] = RosterEntry{ true, ready, lobby_name, lobby_controller, 0, 0, table[0].pad, table[0].pad_seen };
             broadcast_roster();
             Event event{ Event::Type::roster };
             pending_events.push_back(std::move(event));
         } else if (own_port >= 0 && !peers.empty()) {
             Lobby lobby;
             lobby.ready = ready ? 1 : 0;
+            lobby.controller = lobby_controller;
             lobby.name = to_array(lobby_name);
             send_to(peers.front().connection, lobby);
+        }
+    }
+
+    // Sends this peer's pad to the lobby
+    void Session::send_lobby_pad(const Pad& pad) {
+        if (!valid(pad) || pad.err_no != 0) return;
+        if (is_host ? !entry_open : started) return;
+        if (!is_host && (own_port < 0 || peers.empty())) return;
+
+        if (is_host) {
+            table[0].pad = pad;
+            table[0].pad_seen = true;
+            for (const auto& peer : peers) {
+                if (peer.port >= 0) {
+                    send_to(peer.connection, LobbyPad{ 0, pad });
+                }
+            }
+        } else {
+            table[own_port].pad = pad;
+            table[own_port].pad_seen = true;
+            send_to(peers.front().connection, LobbyPad{ (uint8_t)own_port, pad });
         }
     }
 
@@ -319,6 +349,9 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
         packet.port = port;
         packet.present = table[port].present ? 1 : 0;
         packet.ready = table[port].ready ? 1 : 0;
+        packet.controller = table[port].controller;
+        packet.ping_ms = table[port].ping_ms;
+        packet.jitter_ms = table[port].jitter_ms;
         packet.name = to_array(table[port].name);
         return packet;
     }
@@ -330,6 +363,21 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
                 for (int p = 0; p < match_players; ++p) {
                     send_to(peer.connection, roster_packet(p));
                 }
+            }
+        }
+        last_roster_at = now();
+        for (auto& peer : peers) {
+            if (peer.port >= 0 && peer.rtt_count > 0) {
+                peer.rtt_sent = true;
+            }
+        }
+        for (int p = 0; p < match_players; ++p) {
+            if (table[p].present) {
+                sent_ping[p] = table[p].ping_ms;
+                sent_jitter[p] = table[p].jitter_ms;
+            } else {
+                sent_ping[p] = 0;
+                sent_jitter[p] = 0;
             }
         }
     }
@@ -410,6 +458,8 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
         std::vector<Event> events = std::move(pending_events);
         pending_events.clear();
 
+        const double t = now();
+
         if (poll_group != k_HSteamNetPollGroup_Invalid) {
             SteamNetworkingMessage_t* messages[32];
             int count;
@@ -438,7 +488,6 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
         }
 
         // Joiners that never said Hello.
-        const double t = now();
         for (size_t i = 0; i < peers.size();) {
             if (is_host && peers[i].port < 0 && t - peers[i].connected_at > handshake_seconds) {
                 drop(peers[i], Reason::timeout, &events);
@@ -447,6 +496,20 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
                 i++;
             }
         }
+
+        // Host pings joiners once a second before the start.
+        if (is_host && entry_open && t - last_ping_at >= 1.0) {
+            last_ping_at = t;
+            ++ping_counter;
+            for (auto& peer : peers) {
+                if (peer.port >= 0) {
+                    send_to(peer.connection, Ping{ ping_counter });
+                    peer.ping_seq = ping_counter;
+                    peer.ping_sent_at = t;
+                }
+            }
+        }
+
         return events;
     }
 
@@ -486,11 +549,15 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
                     SteamNetworkingSockets()->CloseConnection(peer.connection, k_ESteamNetConnectionEnd_App_Min + (int)*refusal,
                         describe(*refusal), true);
                     peers.erase(peers.begin() + (&peer - peers.data()));
+                    Event event{ Event::Type::refused };
+                    event.reason = *refusal;
+                    event.port = -1;
+                    events.push_back(std::move(event));
                     return;
                 }
                 peer.port = port;
                 send_to(peer.connection, Welcome{ (uint8_t)port, (uint8_t)match_players });
-                table[port] = RosterEntry{ true, false, sanitise_name(std::string(), port) };
+                table[port] = RosterEntry{ true, false, sanitise_name(std::string(), port), 0, 0, 0, Pad{}, false };
                 broadcast_roster();
                 Event event{ Event::Type::joined };
                 event.port = port;
@@ -538,7 +605,7 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
             }
             else if (const Lobby* lobby = std::get_if<Lobby>(&packet)) {
                 if (!entry_open) {
-                    drop(peer, Reason::protocol, &events);
+                    // Sent before the joiner saw Start: too late to count, but nothing wrong with it.
                     return;
                 }
                 const double t = now();
@@ -550,10 +617,87 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
                     drop(peer, Reason::protocol, &events);
                     return;
                 }
-                table[peer.port] = RosterEntry{ true, lobby->ready != 0, sanitise_name(to_string_name(lobby->name), peer.port) };
+                table[peer.port] = RosterEntry{ true, lobby->ready != 0, sanitise_name(to_string_name(lobby->name), peer.port), lobby->controller, table[peer.port].ping_ms, table[peer.port].jitter_ms, table[peer.port].pad, table[peer.port].pad_seen };
                 broadcast_roster();
                 Event event{ Event::Type::roster };
                 events.push_back(std::move(event));
+                return;
+            }
+            else if (const LobbyPad* lobby_pad = std::get_if<LobbyPad>(&packet)) {
+                if (lobby_pad->port != peer.port) {
+                    drop(peer, Reason::protocol, &events);
+                    return;
+                }
+                if (!entry_open) {
+                    // A joiner sends its pad about 15 times a second, so one is often still on its way when the
+                    // host starts: too late to show, but nothing wrong with it.
+                    return;
+                }
+                const double t = now();
+                if (t - peer.pad_window >= 1.0) {
+                    peer.pad_window = t;
+                    peer.pad_count = 0;
+                }
+                if (++peer.pad_count > max_lobby_pads_per_second) {
+                    drop(peer, Reason::protocol, &events);
+                    return;
+                }
+                table[peer.port].pad = lobby_pad->pad;
+                table[peer.port].pad_seen = true;
+                for (const auto& other : peers) {
+                    if (other.port >= 0 && other.connection != peer.connection) {
+                        send_to(other.connection, *lobby_pad);
+                    }
+                }
+                return;
+            }
+            else if (std::holds_alternative<Ping>(packet)) {
+                drop(peer, Reason::protocol, &events);
+                return;
+            }
+            else if (const Pong* pong = std::get_if<Pong>(&packet)) {
+                if (!entry_open) return;
+                const double t = now();
+                if (t - peer.pong_window >= 1.0) {
+                    peer.pong_window = t;
+                    peer.pong_count = 0;
+                }
+                if (++peer.pong_count > max_pongs_per_second) {
+                    drop(peer, Reason::protocol, &events);
+                    return;
+                }
+                if (pong->seq != peer.ping_seq) return;
+                const double rtt_ms = (t - peer.ping_sent_at) * 1000.0;
+                peer.rtt_samples[peer.rtt_next] = rtt_ms;
+                peer.rtt_next = (peer.rtt_next + 1) % 8;
+                if (peer.rtt_count < 8) ++peer.rtt_count;
+
+                int min_sample = INT_MAX;
+                int max_sample = INT_MIN;
+                double sum = 0.0;
+                for (int i = 0; i < peer.rtt_count; ++i) {
+                    const int sample = static_cast<int>(std::lround(peer.rtt_samples[i]));
+                    sum += sample;
+                    if (sample < min_sample) min_sample = sample;
+                    if (sample > max_sample) max_sample = sample;
+                }
+                int ping_ms = static_cast<int>(std::lround(sum / peer.rtt_count));
+                int jitter = max_sample - min_sample;
+
+                // At least 1 ms: 0 means not measured yet, and a fast connection would round to it.
+                ping_ms = std::clamp(ping_ms, 1, 65535);
+                jitter = std::clamp(jitter, 0, 65535);
+
+                table[peer.port].ping_ms = ping_ms;
+                table[peer.port].jitter_ms = jitter;
+
+                bool changed = std::abs(ping_ms - sent_ping[peer.port]) >= 3 || std::abs(jitter - sent_jitter[peer.port]) >= 3;
+
+                if (t - last_roster_at >= 0.5 && (changed || !peer.rtt_sent)) {
+                    broadcast_roster();
+                    Event event{ Event::Type::roster };
+                    events.push_back(std::move(event));
+                }
                 return;
             }
             else if (!std::holds_alternative<Hash>(packet)) {
@@ -582,6 +726,7 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
                     lobby_name = sanitise_name(lobby_raw, own_port);
                     Lobby lobby;
                     lobby.ready = lobby_ready ? 1 : 0;
+                    lobby.controller = lobby_controller;
                     lobby.name = to_array(lobby_name);
                     send_to(peer.connection, lobby);
                 }
@@ -607,6 +752,7 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
             started = true;
             Event event{ Event::Type::started };
             event.own_view = start->own_view != 0;
+            event.delay = start->delay;
             events.push_back(std::move(event));
         }
         else if (const Inputs* inputs = std::get_if<Inputs>(&packet); inputs != nullptr) {
@@ -644,9 +790,23 @@ constexpr int max_lobbies_per_second = 8;   // Lobby packets one joiner may send
                 drop(peer, Reason::protocol, &events);
                 return;
             }
-            table[entry->port] = RosterEntry{ entry->present != 0, entry->ready != 0, to_string_name(entry->name) };
+            table[entry->port] = RosterEntry{ entry->present != 0, entry->ready != 0, to_string_name(entry->name), entry->controller, entry->ping_ms, entry->jitter_ms, table[entry->port].pad, table[entry->port].pad_seen };
             Event event{ Event::Type::roster };
             events.push_back(std::move(event));
+        }
+        else if (const LobbyPad* lobby_pad = std::get_if<LobbyPad>(&packet)) {
+            if (lobby_pad->port >= match_players) {
+                drop(peer, Reason::protocol, &events);
+                return;
+            }
+            if (started) {
+                return;
+            }
+            table[lobby_pad->port].pad = lobby_pad->pad;
+            table[lobby_pad->port].pad_seen = true;
+        }
+        else if (const Ping* ping = std::get_if<Ping>(&packet)) {
+            send_to(peer.connection, Pong{ ping->seq });
         }
         else {
             drop(peer, Reason::protocol, &events);

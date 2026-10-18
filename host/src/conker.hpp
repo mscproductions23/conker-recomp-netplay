@@ -156,6 +156,10 @@ namespace conker {
         // first connected, else null.
         std::vector<_SDL_GameController*> connected_controllers();
         _SDL_GameController* primary_controller();
+        // This player's pad as the game would read it on port 1 (the keyboard and the first controller), for
+        // the netplay lobby's live pad view: N64 button bits, and the stick as -1 to 1 (up is positive). False
+        // if no port is plugged in yet.
+        bool read_local_pad(uint16_t* buttons, float* x, float* y);
         // The window's size when it opens (main.cpp's --window); 1600 x 900 when 0.
         inline int window_width = 0;
         inline int window_height = 0;

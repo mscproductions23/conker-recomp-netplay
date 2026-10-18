@@ -797,3 +797,20 @@ SDL_GameController* conker::frontend::primary_controller() {
     }
     return open_controllers.empty() ? nullptr : open_controllers.front().second;
 }
+
+bool conker::frontend::read_local_pad(uint16_t* buttons, float* x, float* y) {
+    // The pad as the game will read it on port 1: the keyboard and the first controller to press a button. The
+    // game's own reader gives nothing while a menu is open (the lobby is one), so this reads it directly. The
+    // mouse and gyro are left out, as in a netplay match.
+    *buttons = 0;
+    *x = 0.0f;
+    *y = 0.0f;
+    // The keyboard's state is refreshed by the game's own controller reads, and none run in the lobby (the game
+    // hasn't started), so refresh it here: nothing else polls at this point.
+    recompinput::poll_inputs();
+    std::array<SDL_GameController*, max_ports> controllers{};
+    int connected = 0;
+    const int count = get_port_controllers(controllers, &connected);
+    read_port(count > 0 ? controllers[0] : nullptr, true, false, false, false, buttons, x, y);
+    return true;
+}

@@ -5,12 +5,16 @@
 //   lobby_test host <port>             hosts a match of 2 and checks what the joiners do to the lobby
 //   lobby_test join <code> first       joins, names itself, sends an odd name, then floods the host with lobby
 //                                      messages, and must be dropped for it
-//   lobby_test join <code> second      joins the place that frees, names itself, and must be told the match has
-//                                      started; its lobby messages after that must change nothing
+//   lobby_test join <code> refused     joins with another build than the host's: it must be refused, and the host
+//                                      must be told
+//   lobby_test join <code> second      joins the place that frees, names itself, sends its controller and a live
+//                                      pad, sees the host's, and must be told the match has started, with the
+//                                      input delay the host chose; its lobby messages after that change nothing
 //
-// Names and Ready travel to everyone's roster, bad names are cleaned, a flood is dropped, the host starts
-// the match, and the lobby doesn't change after the start. Each prints "ok:" and "FAIL:" lines and ends with
-// "lobby_test <role>: all passed" (exit code 0) or "lobby_test <role>: N FAILED".
+// Names and Ready travel to everyone's roster, bad names are cleaned, a flood is dropped, a different build is
+// refused, the controller type and live pads travel both ways, the host measures a ping, the host starts the
+// match with its input delay, and the lobby doesn't change after the start. Each prints "ok:" and "FAIL:" lines
+// and ends with "lobby_test <role>: all passed" (exit code 0) or "lobby_test <role>: N FAILED".
 
 #include <chrono>
 #include <cstdio>
@@ -55,6 +59,16 @@ namespace {
             return false;
         }
 
+        // The first event of `type`, or null.
+        const Event* first(Event::Type type) const {
+            for (const Event& event : events) {
+                if (event.type == type) {
+                    return &event;
+                }
+            }
+            return nullptr;
+        }
+
         RosterEntry entry(int port) const {
             const std::vector<RosterEntry> roster = session.roster();
             return port >= 0 && port < (int)roster.size() ? roster[port] : RosterEntry{};
@@ -93,6 +107,23 @@ namespace {
             }
         }
         return true;
+    }
+
+    // The pads the test sends: the joiner's (A and R, the stick a little right and down) and the host's (Start and
+    // B, the stick left).
+    Pad joiner_pad() {
+        Pad pad;
+        pad.buttons = 0x8000 | 0x0010;
+        pad.stick_x = 30;
+        pad.stick_y = -40;
+        return pad;
+    }
+    Pad host_pad() {
+        Pad pad;
+        pad.buttons = 0x1000 | 0x4000;
+        pad.stick_x = -60;
+        pad.stick_y = 5;
+        return pad;
     }
 
     // Says goodbye, then releases the session before the library is shut down (the other way round crashes).
@@ -152,23 +183,44 @@ namespace {
         check(dropped, "a joiner sending its lobby over and over is dropped");
         check(!host.entry(1).present && host.entry(1).name.empty(), "its place in the roster is freed");
 
-        // The second joiner takes the place; the host's own name reaches it, and the host starts the match.
-        host.session.set_lobby("Bob", true);
+        // A joiner with another build is refused, and the host is told why.
+        const bool refused = host.wait_for(30000, [&]() { return host.saw(Event::Type::refused); });
+        check(refused, "the host is told a joiner was refused");
+        const Event* refusal = host.first(Event::Type::refused);
+        check(refusal != nullptr && refusal->reason == Reason::build, "...because it runs another build");
+        check(!host.entry(1).present, "a refused joiner takes no place");
+
+        // The second joiner takes the place. Its controller type and live pad reach the host, with a ping.
+        host.session.set_lobby("Bob", true, 1);
         const bool carol = host.wait_for(30000, [&]() { return host.entry(1).name == "Carol" && host.entry(1).ready; });
         check(carol, "a new joiner takes the free place, and its name and Ready reach the host");
-        check(host.entry(0).name == "Bob" && host.entry(0).ready, "the host's own name and Ready are in its roster");
-        check(host.session.start(false), "the host can start once every place is taken");
+        check(host.entry(0).name == "Bob" && host.entry(0).ready && host.entry(0).controller == 1,
+            "the host's own name, Ready and controller are in its roster");
+        check(host.entry(1).controller == 2, "the joiner's controller type reaches the host");
+        const bool pad_in = host.wait_for(15000, [&]() { return host.entry(1).pad_seen && host.entry(1).pad == joiner_pad(); });
+        check(pad_in, "the joiner's live pad reaches the host");
+        host.session.send_lobby_pad(host_pad());
+        check(host.entry(0).pad_seen && host.entry(0).pad == host_pad(), "the host's own pad is in its roster");
+        const bool ping = host.wait_for(15000, [&]() { return host.entry(1).ping_ms >= 1; });
+        check(ping, "the host measures the joiner's ping");
+        check(host.entry(0).ping_ms == 0, "the host has no ping to itself");
+
+        // Start, with the host's input delay.
+        check(host.session.start(false, 5), "the host can start once every place is taken");
 
         // After the start nothing in the lobby changes, and asking it to doesn't break anything.
         host.session.set_lobby("Eve", false);
+        host.session.send_lobby_pad(Pad{});
         host.pump(2000);
         check(host.entry(1).name == "Carol" && host.entry(1).ready && host.entry(0).name == "Bob",
             "names sent after the start change nothing");
+        check(host.entry(1).pad == joiner_pad() && host.entry(0).pad == host_pad(), "pads sent after the start change nothing");
         return finish("host", owner);
     }
 
     int run_joiner(const std::string& code, const std::string& which) {
-        const Hello me{ 1, 1, 1, 1 };
+        // The refused joiner runs another build.
+        const Hello me{ which == "refused" ? 2ull : 1ull, 1, 1, 1 };
         std::string error;
         if (!startup(error)) {
             std::printf("FAIL: couldn't start the networking: %s\n", error.c_str());
@@ -181,6 +233,14 @@ namespace {
             owner.reset();
             shutdown();
             return 1;
+        }
+        if (which == "refused") {
+            const bool ended = joiner.wait_for(15000, [&]() { return joiner.saw(Event::Type::ended); });
+            check(ended, "a joiner with another build is turned away");
+            const Event* end = joiner.first(Event::Type::ended);
+            check(end != nullptr && end->reason == Reason::build, "...and told it was the build");
+            check(!joiner.saw(Event::Type::welcomed), "it was never welcomed");
+            return finish("refused", owner);
         }
         const bool in = joiner.wait_for(15000, [&]() {
             return joiner.saw(Event::Type::welcomed) && joiner.entry(0).present &&
@@ -210,13 +270,23 @@ namespace {
                 "the host drops it for flooding its lobby");
         }
         else {
-            joiner.session.set_lobby("Carol", true);
+            joiner.session.set_lobby("Carol", true, 2);
+            joiner.session.send_lobby_pad(joiner_pad());
             check(joiner.wait_for(5000, [&]() { return joiner.entry(0).name == "Bob" || joiner.entry(port).name == "Carol"; }),
                 "its name, or the host's, arrives in the roster");
+            check(joiner.wait_for(15000, [&]() { return joiner.entry(0).pad_seen && joiner.entry(0).pad == host_pad(); }),
+                "the host's live pad reaches the joiner");
+            check(joiner.entry(0).controller == 1 && joiner.entry(port).controller == 2,
+                "the controller types are in the joiner's roster");
+            check(joiner.wait_for(15000, [&]() { return joiner.entry(port).ping_ms >= 1; }),
+                "the joiner sees its own ping in the roster");
             check(joiner.wait_for(30000, [&]() { return joiner.saw(Event::Type::started); }),
                 "it is told the match has started");
+            const Event* started = joiner.first(Event::Type::started);
+            check(started != nullptr && started->delay == 5, "...with the input delay the host chose");
             // After the start its lobby messages change nothing, and it isn't dropped for them.
             joiner.session.set_lobby("Dave", false);
+            joiner.session.send_lobby_pad(Pad{});
             joiner.pump(1500);
             check(!joiner.saw(Event::Type::ended), "it is not dropped for asking");
         }
@@ -229,9 +299,9 @@ int main(int argc, char** argv) {
         return run_host((uint16_t)std::atoi(argv[2]));
     }
     if (argc == 4 && std::strcmp(argv[1], "join") == 0 &&
-        (std::strcmp(argv[3], "first") == 0 || std::strcmp(argv[3], "second") == 0)) {
+        (std::strcmp(argv[3], "first") == 0 || std::strcmp(argv[3], "second") == 0 || std::strcmp(argv[3], "refused") == 0)) {
         return run_joiner(argv[2], argv[3]);
     }
-    std::fprintf(stderr, "usage: lobby_test host <port> | lobby_test join <code> first|second\n");
+    std::fprintf(stderr, "usage: lobby_test host <port> | lobby_test join <code> first|refused|second\n");
     return 2;
 }

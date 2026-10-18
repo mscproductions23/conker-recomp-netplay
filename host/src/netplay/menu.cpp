@@ -11,8 +11,10 @@
 // local one, for a match at home). The code is the host's address, so the menu says to share it only with
 // people the host trusts. The input delay is lockstep's default, the same on every machine.
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -34,7 +36,11 @@
 #include "../conker.hpp"
 #include "hello.hpp"
 #include "lockstep.hpp"
+#include "addresses.hpp"
+#include "diag.hpp"
 #include "lobby.hpp"
+#include "settings.hpp"
+#include "net/join_code.hpp"
 #include "net/session.hpp"
 
 namespace {
@@ -48,6 +54,19 @@ namespace {
     std::mutex over_mutex;
     std::string over_text;
     bool over_pending = false;
+
+    // The build as a player can compare it with a friend's: "0.1.6 9296b4d", the version and the first seven
+    // characters of the commit, and "(modified)" if the program was built from changed files.
+    std::string short_build() {
+        const std::string id = conker::netplay::build_id();
+        const size_t space = id.find(' ');
+        if (space == std::string::npos) {
+            return id;
+        }
+        const std::string commit = id.substr(space + 1);
+        const bool modified = commit.find("-dirty-") != std::string::npos;
+        return id.substr(0, space) + " " + commit.substr(0, 7) + (modified ? " (modified)" : "");
+    }
 
     class NetplayPage : public recompui::Element {
         enum class State { idle, connecting, starting };
@@ -74,6 +93,11 @@ namespace {
         std::string port_text = std::to_string(default_port);
         std::string address_text;
         std::string join_text;
+        recompui::Radio* address_radio = nullptr;
+        std::vector<conker::netplay_helpers::LocalAddress> addresses;   // this computer's, for the picker
+        recompui::Label* join_hint = nullptr;
+        recompui::Button* diag_button = nullptr;
+        std::string last_status;            // the last status line noted for the diagnostics
 
         recompui::Label* text(recompui::Element* parent, const std::string& words, recompui::theme::Typography typography,
             recompui::theme::color color = recompui::theme::color::Text) {
@@ -90,6 +114,8 @@ namespace {
             box->set_gap(gap);
             box->set_width(100.0f, recompui::Unit::Percent);
             box->set_align_items(recompui::AlignItems::FlexStart);
+            // The page scrolls when it's taller than the window: its rows keep their size, not squash together.
+            box->set_flex_shrink(0.0f);
             return box;
         }
 
@@ -99,6 +125,7 @@ namespace {
             box->set_flex_direction(recompui::FlexDirection::Row);
             box->set_align_items(recompui::AlignItems::Center);
             box->set_gap(16.0f);
+            box->set_flex_shrink(0.0f);
             return box;
         }
 
@@ -145,15 +172,32 @@ namespace {
             }
             show_code();
             status_label->set_text(status);
-            host_button->set_enabled(state == State::idle);
-            join_button->set_enabled(state == State::idle);
-            cancel_button->set_display(state == State::connecting ? recompui::Display::Flex : recompui::Display::None);
-            // While connecting the lobby takes the place of the host, join and screen settings.
+            // Focus moves to a control that stays on screen before the focused one is hidden or disabled:
+            // navigating from a hidden element throws in the nav tree.
             const bool lobby = state == State::connecting;
             const recompui::Display settings = lobby ? recompui::Display::None : recompui::Display::Flex;
-            host_section->set_display(settings);
-            join_section->set_display(settings);
-            display_section->set_display(settings);
+            if (lobby) {
+                // Focus goes to Copy diagnostics, which a held key or pad button can press without harm (Cancel
+                // would leave the lobby).
+                cancel_button->set_display(recompui::Display::Flex);
+                diag_button->focus();
+            }
+            else {
+                host_section->set_display(settings);
+                join_section->set_display(settings);
+                display_section->set_display(settings);
+                host_button->set_enabled(true);
+                join_button->set_enabled(true);
+                host_button->focus();
+                cancel_button->set_display(recompui::Display::None);
+            }
+            if (lobby) {
+                host_button->set_enabled(false);
+                join_button->set_enabled(false);
+                host_section->set_display(settings);
+                join_section->set_display(settings);
+                display_section->set_display(settings);
+            }
             if (lobby && !lobby_shown) {
                 lobby_panel->open(hosting);
             }
@@ -180,6 +224,9 @@ namespace {
                 set_state(State::idle, "Couldn't: " + error);
                 return;
             }
+            conker::netplay_helpers::note(hosting ? "hosting a match of " + std::to_string(players) + " on port " + port_text
+                : "joining by code");
+            diag_button->set_text("Copy diagnostics");
             set_state(State::connecting, "Connecting...");
         }
 
@@ -211,7 +258,67 @@ namespace {
         void on_cancel() {
             conker::lockstep::cancel();
             conker::lockstep::set_host(-1, players);
+            conker::netplay_helpers::note("cancelled");
             set_state(State::idle, "Cancelled.");
+        }
+
+        // What this player picked, kept for next time (the name is the lobby's, kept in the same file).
+        void save_settings() {
+            const std::filesystem::path folder = recomp::get_config_path();
+            conker::netplay_helpers::Settings settings = conker::netplay_helpers::load_settings(folder);
+            settings.port = std::clamp(std::atoi(port_text.c_str()), 1, 65535);
+            settings.players = players;
+            settings.address = address_text;
+            settings.own_view_for_everyone = own_view_for_everyone;
+            conker::netplay_helpers::save_settings(folder, settings);
+        }
+
+        void note_status(const std::string& status) {
+            if (status != last_status) {
+                last_status = status;
+                conker::netplay_helpers::note(status);
+            }
+        }
+
+        // What to send someone helping with a problem: the build, the system, the controllers, the lobby, and
+        // the last things that happened.
+        std::string build_diagnostics() const {
+            std::string out = "Conker netplay diagnostics\n";
+            out += std::string("Build: ") + conker::netplay::build_id() + "\n";
+            SDL_version version{};
+            SDL_GetVersion(&version);
+            out += std::string("System: ") + SDL_GetPlatform() + ", SDL " + std::to_string(version.major) + "." +
+                std::to_string(version.minor) + "." + std::to_string(version.patch) + "\n";
+            out += "Controllers:\n";
+            const auto controllers = conker::frontend::connected_controllers();
+            for (_SDL_GameController* controller : controllers) {
+                const char* name = SDL_GameControllerName(controller);
+                out += std::string("  ") + (name != nullptr ? name : "controller") + " (" +
+                    conker::controller_glyphs::info_of(controller).name + ")\n";
+            }
+            if (controllers.empty()) {
+                out += "  none\n";
+            }
+            const char* states[] = { "idle", "connecting", "starting" };
+            out += std::string("State: ") + states[(int)state] + (hosting ? ", hosting" : "") + "\n";
+            const auto roster = conker::lockstep::lobby();
+            for (size_t i = 0; i < roster.size(); i++) {
+                const auto& entry = roster[i];
+                out += "  Player " + std::to_string(i + 1) + ": " + (entry.present ? entry.name : std::string("(empty)")) +
+                    (entry.present ? std::string(entry.ready ? ", ready" : ", not ready") + ", controller " +
+                    std::to_string(entry.controller) + ", ping " + std::to_string(entry.ping_ms) + " ms, jitter " +
+                    std::to_string(entry.jitter_ms) + " ms" : std::string()) + "\n";
+            }
+            out += "Recent events:\n" + conker::netplay_helpers::recent(60) + "\n";
+            return out;
+        }
+
+        void copy_diagnostics() {
+            const std::string report = build_diagnostics();
+            if (SDL_SetClipboardText(report.c_str()) == 0) {
+                diag_button->set_text("Copied");
+                queue_update();
+            }
         }
 
     protected:
@@ -227,6 +334,14 @@ namespace {
                     case conker::lockstep::Progress::waiting:
                         status_label->set_text(status);
                         lobby_panel->refresh();
+                        note_status(status);
+                        {
+                            const std::string notice = conker::lockstep::lobby_notice();
+                            if (!notice.empty()) {
+                                lobby_panel->show_notice(notice);
+                                conker::netplay_helpers::note(notice);
+                            }
+                        }
                         break;
                     case conker::lockstep::Progress::failed:
                         conker::lockstep::set_host(-1, players);
@@ -261,6 +376,8 @@ namespace {
             set_width(100.0f, recompui::Unit::Percent);
             set_background_color(recompui::theme::color::Background1);
             set_as_navigation_container(recompui::NavigationType::Vertical);
+            // Taller than the window (the lobby with four players): scroll, don't squash.
+            set_overflow_y(recompui::Overflow::Auto);
 
             recompui::Element* intro = column(this, 8.0f);
             text(intro, "Netplay", Typography::Header3);
@@ -269,6 +386,16 @@ namespace {
                 "packs are fine). You play with your first controller; the game starts from the "
                 "beginning, with an empty save.",
                 Typography::Body, color::TextDim);
+
+            text(intro, "Build " + short_build() + ". Everyone in a match needs the same one: compare this line.",
+                Typography::LabelSM, color::TextDim);
+
+            // What this player picked last time.
+            const conker::netplay_helpers::Settings saved = conker::netplay_helpers::load_settings(recomp::get_config_path());
+            players = saved.players;
+            port_text = std::to_string(saved.port);
+            address_text = saved.address;
+            own_view_for_everyone = saved.own_view_for_everyone;
 
             // Hosting.
             recompui::Element* host = column(this, 12.0f);
@@ -280,24 +407,68 @@ namespace {
             for (int n = 2; n <= conker::netplay::max_players; n++) {
                 count_radio->add_option(std::to_string(n));
             }
-            count_radio->set_index(0);
-            count_radio->add_index_changed_callback([this](uint32_t index) { players = 2 + (int)index; });
+            count_radio->set_index((uint32_t)(players - 2));
+            count_radio->add_index_changed_callback([this](uint32_t index) {
+                players = 2 + (int)index;
+                save_settings();
+            });
             text(host_row, "UDP port", Typography::LabelMD);
             port_input = input(host_row, port_text, 120.0f);
-            port_input->add_text_changed_callback([this](const std::string& value) { port_text = value; });
+            port_input->add_text_changed_callback([this](const std::string& value) {
+                port_text = value;
+                save_settings();
+            });
             text(host_row, "Your address", Typography::LabelMD);
-            address_input = input(host_row, "", 320.0f);
+            address_input = input(host_row, address_text, 320.0f);
             address_input->add_text_changed_callback([this](const std::string& value) {
                 address_text = value;
+                save_settings();
                 show_code();
             });
+            // This computer's addresses, to pick one instead of looking it up: Tailscale first (the friends on the
+            // same Tailscale network reach it without opening anything), then the home network.
+            addresses = conker::netplay_helpers::local_addresses();
+            if (!addresses.empty()) {
+                recompui::Element* picker_row = row(host);
+                text(picker_row, "Use", Typography::LabelMD);
+                address_radio = context.create_element<recompui::Radio>(picker_row);
+                int pick = -1;
+                for (size_t i = 0; i < addresses.size(); i++) {
+                    address_radio->add_option(addresses[i].kind + " " + addresses[i].address);
+                    if (addresses[i].address == address_text) {
+                        pick = (int)i;
+                    }
+                }
+                address_radio->add_option("Other: type it above");
+                if (pick < 0) {
+                    // Nothing typed (or an address from another network): the best one found.
+                    pick = address_text.empty() ? 0 : (int)addresses.size();
+                    if (address_text.empty()) {
+                        address_text = addresses[0].address;
+                        address_input->set_text(address_text);
+                    }
+                }
+                address_radio->set_index((uint32_t)pick);
+                address_radio->add_index_changed_callback([this](uint32_t index) {
+                    if (index < addresses.size()) {
+                        address_text = addresses[index].address;
+                        address_input->set_text(address_text);
+                        save_settings();
+                        show_code();
+                        queue_update();
+                    }
+                });
+            }
             recompui::Element* screens_row = row(host);
             text(screens_row, "Screens", Typography::LabelMD);
             recompui::Radio* screens_radio = context.create_element<recompui::Radio>(screens_row);
             screens_radio->add_option("Everyone sees only their own view");
             screens_radio->add_option("Players choose");
-            screens_radio->set_index(0);
-            screens_radio->add_index_changed_callback([this](uint32_t index) { own_view_for_everyone = index == 0; });
+            screens_radio->set_index(own_view_for_everyone ? 0 : 1);
+            screens_radio->add_index_changed_callback([this](uint32_t index) {
+                own_view_for_everyone = index == 0;
+                save_settings();
+            });
             recompui::Element* code_row = row(host);
             code_label = text(code_row, "", Typography::LabelMD);
             copy_button = context.create_element<recompui::Button>(code_row, "Copy", recompui::ButtonStyle::Tertiary);
@@ -341,6 +512,7 @@ namespace {
             });
             join_button = context.create_element<recompui::Button>(join, "Join", recompui::ButtonStyle::Primary);
             join_button->add_pressed_callback([this]() { on_join(); });
+            join_hint = text(join, "", Typography::LabelSM, color::TextDim);
 
             // What this window shows of the split screen.
             recompui::Element* display = column(this, 12.0f);
@@ -364,8 +536,34 @@ namespace {
             status_label = text(status, "", Typography::LabelLG);
             cancel_button = context.create_element<recompui::Button>(status, "Cancel", recompui::ButtonStyle::Tertiary);
             cancel_button->add_pressed_callback([this]() { on_cancel(); });
+            diag_button = context.create_element<recompui::Button>(status, "Copy diagnostics", recompui::ButtonStyle::Tertiary);
+            diag_button->add_pressed_callback([this]() { copy_diagnostics(); });
             set_state(State::idle, "");
             show_code();
+            refresh_clipboard();
+            queue_update();
+        }
+
+        // A join code on the clipboard fills the join box when the page opens, so joining is one press.
+        void refresh_clipboard() {
+            if (state != State::idle) {
+                return;
+            }
+            char* pasted = SDL_GetClipboardText();
+            if (pasted == nullptr) {
+                return;
+            }
+            std::string code = pasted;
+            SDL_free(pasted);
+            code = code.substr(0, code.find_first_of("\r\n"));
+            while (!code.empty() && code.back() == ' ') code.pop_back();
+            while (!code.empty() && code.front() == ' ') code.erase(code.begin());
+            if (code.empty() || code == join_text || !conker::netplay::decode_join_code(code)) {
+                return;
+            }
+            join_text = code;
+            join_input->set_text(code);
+            join_hint->set_text("Filled in from your clipboard.");
             queue_update();
         }
 
@@ -408,6 +606,9 @@ void conker::netplay_menu::open() {
                 page->cancel_if_connecting();
             }
         });
+    }
+    if (page != nullptr) {
+        page->refresh_clipboard();
     }
     modal->open();
 }
