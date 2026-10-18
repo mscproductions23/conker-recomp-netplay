@@ -41,27 +41,65 @@ Upstream's [README](https://github.com/sciaschi/CBFD-Recompiled#readme) lists th
 
 This is experimental. What has and hasn't been checked:
 
-- **Checked:** upstream's determinism check and its two-copy lockstep check both pass on a Linux build of this
-  fork (headless). The Linux and macOS release builds carry the same build id, from the same clean commit.
-- **Not checked yet:** a real match between two machines over a network, the Windows build (the workflow
-  exists and is being tested), the macOS DMG, and how the new launcher looks on every platform.
-- **Limits of netplay, as upstream has it:** the host has to be reachable (the same Tailscale network, or a
-  forwarded UDP port). There is no NAT traversal and no room server. A join code is the host's address, port
-  and a match key, so give it only to people you trust. A match starts from boot with an empty save. Everyone
-  must run the **same build**: the handshake refuses a different commit, ROM, settings profile or mods.
-- **Not built:** short room codes with a room server, an in-launcher update check, and an Apple TV port.
-  They are plans, not features.
+- **Checked:** upstream's determinism check and its two-copy lockstep check pass on a Linux build of this
+  fork (headless). The lobby, the scripted game modes and the room server were run with two copies of the
+  game on one Linux machine (a host and a joiner met through the room server, and both ended up with the
+  same game memory as a solo replay of the same match). The Linux and macOS release builds carry the same
+  build id, from the same clean commit.
+- **Not checked yet:** a real match between two machines on different networks; UPnP on a real router;
+  Tailscale Funnel from outside a tailnet; controllers in the lobby; the Windows build (the workflow exists
+  but has not been run for this version); the Windows and macOS builds of the room client.
+- **Limits of netplay:** a host has to be reachable: the same Tailscale network, a forwarded UDP port (the
+  game asks the router for it with UPnP, which not every router allows), or the room server's public
+  address. There is no relay: if two players can't reach each other directly the match can't happen. A join
+  code is the host's address, port and a match key, so give it only to people you trust. A match starts from
+  boot with an empty save. Everyone must run the **same build**: the handshake refuses a different commit,
+  ROM, settings profile or mods.
+- **Not built:** an in-launcher update check (use the manual sync workflow below) and an Apple TV port.
 
 ## Playing online
 
 1. Every player gets the same release (or builds the same commit) and loads their own US ROM in the launcher
    the first time.
-2. The host opens **Netplay**, picks the number of players, the port and the address friends will use (a
-   Tailscale address works without port forwarding), and copies the join code.
-3. The others open **Netplay**, paste the code to join, and the game starts on every machine once all are in.
+2. The host opens **Netplay**, picks the number of players, the port and the address friends will use (the
+   Tailscale and home-network addresses are filled in; a Tailscale address works without port forwarding),
+   and presses **Host**. The lobby shows a join code, and a short code too if a room server is set.
+3. The others open **Netplay** and paste the join code (or type the short code), and join the lobby.
+4. In the lobby everyone sees names, controller types, pings and a live view of each controller. Joiners press
+   **I'm ready**; the host can pick the input delay (Auto is chosen from the pings) and a game mode (or leave
+   it to the game's own menus), and presses **Start game**.
 
 Each player uses their first controller. Mouse and gyro aiming, and the free camera, are switched off during a
-match so every machine runs the same game.
+match so every machine runs the same game. **Copy diagnostics** (in the lobby) puts a report on the clipboard
+to send with a bug report.
+
+## Running a room server
+
+Optional. A room server turns the long join code into a short one such as `K7Q-F2M` and lets joiners try the
+host's Tailscale, home-network and public addresses in turn. It is one Python file with no dependencies
+(Python 3.9 or later), run in a terminal on any machine the players can reach, and it never sees game traffic
+or the ROM; it holds a host's addresses only while the room is open.
+
+    python3 tools/room_server/room_server.py --port 27080
+
+Friends outside your Tailscale network need a public address: with Tailscale Funnel enabled for your network
+(Tailscale's admin page), `tailscale funnel --bg --https=8443 27080` publishes it as
+`https://<your-machine>.<tailnet>.ts.net:8443` (8443 and 443 are two of the ports Funnel allows; use one that
+isn't already serving something). Everyone then types that address under **Room server** on the Netplay page,
+once; it is remembered. The server's API is described in [`tools/room_server/API.md`](tools/room_server/API.md).
+The game talks to it through the system `curl` (present on macOS, Windows 10 and later, and most Linux).
+
+## Testing a build
+
+What to try between two machines, and what to send back if something is wrong:
+
+1. Host and join by the **long join code**, over Tailscale; get to the lobby, check each side sees the other's
+   name, controller type, ping and live pad (press buttons), press Ready and Start, and play a minute.
+2. Host with a **game mode** picked (War or Race are quick); everyone should land in the match without
+   touching a menu.
+3. Run a room server, set its address on both machines, and join by the **short code**.
+4. Try a join with a deliberately wrong build or ROM: the lobby should say which.
+5. If anything fails, press **Copy diagnostics** on each machine and send the text, with what you were doing.
 
 ## Getting a build
 

@@ -42,6 +42,15 @@ Netplay
   - Each player uses their first controller. Mouse and gyro aiming and the free
     camera are off during a match. A match starts from boot with an empty save.
 
+Testing this build
+  Try, between two machines: (1) host and join by the long join code and get to the
+  lobby; check you see each other's name, controller type, ping and live controller,
+  then Ready and Start; (2) host with a game mode picked (War or Race are quick);
+  (3) with a room server (tools/room_server in the source repository), join by the
+  short code; (4) join with a different build on purpose: the lobby says why it was
+  refused. If something fails, press "Copy diagnostics" on each machine and send the
+  text with what you were doing.
+
 Requirements
   Windows: Windows 10 or 11, 64-bit, with a Direct3D 12 or Vulkan graphics card.
   Linux: x86-64 with Vulkan, and SDL2, GTK 3 and FreeType installed (on Ubuntu or
