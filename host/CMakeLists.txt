@@ -140,6 +140,9 @@ if (CONKER_NETPLAY)
     # vcpkg) and, but on Windows, OpenSSL.
     add_subdirectory(src/netplay/net)
     target_link_libraries(ConkerRecomp PRIVATE conker_netplay_net)
+    # Asking the router to forward the host's port (src/netplay/upnp.cpp): miniupnpc, fetched at configure time.
+    include("${CMAKE_CURRENT_SOURCE_DIR}/src/netplay/upnp.cmake")
+    target_link_libraries(ConkerRecomp PRIVATE conker_upnp)
 endif()
 
 if (CONKER_RT64)
@@ -208,7 +211,7 @@ if (CONKER_RT64)
     if (CONKER_NETPLAY)
         # The launcher's Netplay menu.
         target_sources(ConkerRecomp PRIVATE src/netplay/menu.cpp src/netplay/lobby.cpp src/netplay/view.cpp
-            src/netplay/addresses.cpp src/netplay/settings.cpp src/netplay/diag.cpp)
+            src/netplay/addresses.cpp src/netplay/settings.cpp src/netplay/diag.cpp src/netplay/roomclient.cpp)
         if (WIN32)
             # This computer's addresses (src/netplay/addresses.cpp: GetAdaptersAddresses).
             target_link_libraries(ConkerRecomp PRIVATE iphlpapi ws2_32)

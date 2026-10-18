@@ -101,6 +101,18 @@ namespace conker::netplay_lobby {
         });
         code_copy->set_display(recompui::Display::None);
 
+        // The short code from the room server, and how reaching the host from outside is going (the router's port).
+        room_row = box(this, recompui::FlexDirection::Row, 16.0f);
+        room_label = text(room_row, "", Typography::LabelMD);
+        room_copy = context.create_element<recompui::Button>(room_row, "Copy", recompui::ButtonStyle::Tertiary);
+        room_copy->add_pressed_callback([this]() {
+            if (!room_code.empty() && SDL_SetClipboardText(room_code.c_str()) == 0) {
+                room_copy->set_text("Copied");
+            }
+        });
+        room_copy->set_display(recompui::Display::None);
+        room_row->set_display(recompui::Display::None);
+
         // Something that happened: a joiner was refused...
         notice_label = text(this, "", Typography::LabelMD, color::Warning);
         notice_label->set_display(recompui::Display::None);
@@ -265,6 +277,20 @@ namespace conker::netplay_lobby {
         join_code = code;
         code_label->set_text(code.empty() ? std::string() : "Join code: " + code);
         code_copy->set_display(code.empty() ? recompui::Display::None : recompui::Display::Flex);
+    }
+
+    void LobbyPanel::set_room(const std::string& short_code, const std::string& status) {
+        if (short_code != room_code) {
+            room_copy->set_text("Copy");
+        }
+        room_code = short_code;
+        std::string line = short_code.empty() ? std::string() : "Short code: " + short_code;
+        if (!status.empty()) {
+            line += std::string(line.empty() ? "" : "  -  ") + status;
+        }
+        room_label->set_text(line);
+        room_copy->set_display(short_code.empty() ? recompui::Display::None : recompui::Display::Flex);
+        room_row->set_display(line.empty() ? recompui::Display::None : recompui::Display::Flex);
     }
 
     void LobbyPanel::show_notice(const std::string& text_to_show) {

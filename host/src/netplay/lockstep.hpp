@@ -18,6 +18,8 @@
 //   --netplay-address <address>  (hosting) this computer's address as the others reach it: the join code
 //                                is made from it and printed (it holds the match's random key)
 //   --netplay-join <code>        joins the host by its join code
+//   --netplay-join-candidates <code1,code2,...>  joins the host by the first of several join codes (comma separated)
+//                                that answers: the same host at several addresses, tried in order
 //   --input-delay <reads>        how many reads ahead a peer's own pads are sent (2 by default, 0 to 8;
 //                                every peer must give the same)
 //   --netplay-desync-at <read>   (a test) changes a byte of game memory at that read, which the next
@@ -47,6 +49,12 @@ namespace conker::lockstep {
     // The same as the options, from the menu (frontend's netplay.cpp).
     void set_host(int port, int players, bool own_view = true);
     void set_join(const std::string& where);
+    // Joiner: the join codes to try in order, for one host reached at several addresses (the same port and key,
+    // as a room server gives them). The first is joined; when one doesn't answer (the connection times out before
+    // the welcome) the next is tried, and so on, until one welcomes or the last fails. A refusal (wrong build, ROM,
+    // mods or key) or a started match is not passed on to the next code. Replaces any set_join code, and set_join
+    // clears the list again; an empty list does nothing.
+    void set_join_candidates(const std::vector<std::string>& codes);
     // Checks the options, before the game starts (false: a message was printed).
     bool prepare();
     // Hosting: the join code for this match at `address` (this computer's, as the others reach it; the

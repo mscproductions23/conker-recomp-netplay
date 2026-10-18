@@ -30,6 +30,11 @@ add_executable(packets_test packets_test.cpp)
 target_link_libraries(packets_test PRIVATE conker_netplay_packets)
 add_executable(matchscript_test matchscript_test.cpp matchscript.cpp)
 target_compile_features(matchscript_test PRIVATE cxx_std_20)
+# The room client (HTTP through the system curl, rooms through the room server); needs a running room server.
+find_package(Threads REQUIRED)
+add_executable(roomclient_test ../roomclient_test.cpp ../roomclient.cpp)
+target_compile_features(roomclient_test PRIVATE cxx_std_20)
+target_link_libraries(roomclient_test PRIVATE Threads::Threads)
 add_executable(join_code_test join_code_test.cpp)
 target_link_libraries(join_code_test PRIVATE conker_netplay_packets)
 

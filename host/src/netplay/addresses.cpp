@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "addresses.hpp"
 
 #include <algorithm>
@@ -125,4 +126,46 @@ std::vector<LocalAddress> local_addresses() {
     return unique_addresses;
 }
 
+
+std::vector<std::string> reachable_candidates(const std::vector<std::string>& host_addresses,
+    const std::vector<LocalAddress>& mine) {
+    bool have_tailscale = false;
+    for (const LocalAddress& local : mine) {
+        have_tailscale = have_tailscale || local.kind == "Tailscale";
+    }
+    auto prefix24 = [](const std::string& address) {
+        const size_t last = address.rfind('.');
+        return last == std::string::npos ? std::string() : address.substr(0, last + 1);
+    };
+    std::vector<std::string> keep;
+    for (const std::string& address : host_addresses) {
+        unsigned a = 0, b = 0, c = 0, d = 0;
+        char extra = 0;
+        if (std::sscanf(address.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4 || a > 255 || b > 255 || c > 255 || d > 255) {
+            keep.push_back(address);    // IPv6 (or anything that isn't a dotted IPv4): not ours to judge
+            continue;
+        }
+        const std::string kind = address_kind((a << 24) | (b << 16) | (c << 8) | d);
+        if (kind.empty()) {
+            continue;
+        }
+        if (kind == "Tailscale") {
+            if (have_tailscale) {
+                keep.push_back(address);
+            }
+        }
+        else if (kind == "Home network") {
+            for (const LocalAddress& local : mine) {
+                if (local.kind == "Home network" && prefix24(local.address) == prefix24(address)) {
+                    keep.push_back(address);
+                    break;
+                }
+            }
+        }
+        else {
+            keep.push_back(address);
+        }
+    }
+    return keep;
+}
 } // namespace conker::netplay_helpers

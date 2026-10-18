@@ -149,6 +149,8 @@ Settings load_settings(const std::filesystem::path& folder) {
             settings.own_view_for_everyone = (value != "0");
         } else if (key == "name") {
             settings.name = clean_text(value, 16);
+        } else if (key == "room_server") {
+            settings.room_server = clean_text(value, 200);
         }
     }
 
@@ -177,6 +179,7 @@ void save_settings(const std::filesystem::path& folder, const Settings& settings
         tmp_file << "address=" << clean_text(settings.address, 64) << "\n";
         tmp_file << "own_view=" << (settings.own_view_for_everyone ? "1" : "0") << "\n";
         tmp_file << "name=" << clean_text(settings.name, 16) << "\n";
+        tmp_file << "room_server=" << clean_text(settings.room_server, 200) << "\n";
 
         tmp_file.close();
 

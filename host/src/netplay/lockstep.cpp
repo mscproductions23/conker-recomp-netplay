@@ -52,6 +52,7 @@ namespace {
     int host_port = -1;
     std::string host_address;       // hosting from the command line: the address the others reach, for the code
     std::string join_where;
+    std::vector<std::string> join_candidates;   // joiner: the join codes to try in order (set_join_candidates); empty: join_where alone
     int wanted_players = 2;
     bool host_own_view = true;      // hosting: the rule this peer will start the match with
     bool match_own_view = false;    // the rule of the match under way
@@ -328,6 +329,46 @@ bool conker::lockstep::parse_option(int argc, char** argv, int& i) {
             return true;
         }
         join_where = argv[++i];
+        join_candidates.clear();
+        return true;
+    }
+    if (std::strcmp(option, "--netplay-join-candidates") == 0) {
+        if (value == nullptr) {
+            std::fprintf(stderr, "[netplay] --netplay-join-candidates needs the host's join codes, separated by commas\n");
+            options_valid = false;
+            return true;
+        }
+
+        std::vector<std::string> codes;
+        const char* current = value;
+        while (true) {
+            const char* comma = std::strchr(current, ',');
+            if (comma == nullptr) {
+                std::string code = current;
+                if (code.empty()) {
+                    std::fprintf(stderr, "[netplay] --netplay-join-candidates needs join codes separated by commas, none of them empty\n");
+                    options_valid = false;
+                    i++;
+                    return true;
+                }
+                codes.push_back(code);
+                break;
+            }
+
+            std::string code(current, comma - current);
+            if (code.empty()) {
+                std::fprintf(stderr, "[netplay] --netplay-join-candidates needs join codes separated by commas, none of them empty\n");
+                options_valid = false;
+                i++;
+                return true;
+            }
+            codes.push_back(code);
+            current = comma + 1;
+        }
+
+        i++;
+        join_candidates = codes;
+        join_where = codes.front();
         return true;
     }
     return false;
@@ -346,11 +387,22 @@ void conker::lockstep::set_host(int port, int players, bool own_view) {
     // The menu's host starts with no scripted match until the lobby picks one.
     host_game_mode = 0;
     host_game_variant = 0;
+    join_candidates.clear();
 }
 
 void conker::lockstep::set_join(const std::string& where) {
     host_port = -1;
     join_where = where;
+    join_candidates.clear();
+}
+
+void conker::lockstep::set_join_candidates(const std::vector<std::string>& codes) {
+    if (codes.empty()) {
+        return;
+    }
+    host_port = -1;
+    join_candidates = codes;
+    join_where = codes.front();
 }
 
 bool conker::lockstep::prepare() {
@@ -396,6 +448,19 @@ namespace {
     double connecting_since = 0;
     bool match_started = false;
     conker::netplay::Hello sent;
+    std::vector<std::string> tries;   // joiner: the join codes being tried, in order (join_candidates, or join_where alone)
+    size_t try_index = 0;             // joiner: the index in tries of the code being tried
+
+    // Joiner: makes a session that joins tries[try_index]. False, with `error` saying why, if that isn't a join code.
+    bool join_try(const conker::netplay::Hello& me, std::string& error) {
+        session = new conker::netplay::Session();
+        if (session->join(tries[try_index], me, error)) {
+            return true;
+        }
+        delete session;
+        session = nullptr;
+        return false;
+    }
 }
 
 bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
@@ -414,12 +479,21 @@ bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
         library_started = true;
     }
     cancel();
-    session = new netplay::Session();
     const bool hosting = host_port > 0;
-    if (hosting ? !session->host((uint16_t)host_port, wanted_players, me, error) : !session->join(join_where, me, error)) {
-        delete session;
-        session = nullptr;
-        return false;
+    if (hosting) {
+        session = new netplay::Session();
+        if (!session->host((uint16_t)host_port, wanted_players, me, error)) {
+            delete session;
+            session = nullptr;
+            return false;
+        }
+    }
+    else {
+        tries = join_candidates.empty() ? std::vector<std::string>{ join_where } : join_candidates;
+        try_index = 0;
+        if (!join_try(me, error)) {
+            return false;
+        }
     }
     sent = me;
     own_port = hosting ? 0 : -1;
@@ -504,6 +578,30 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
             case Event::Type::roster:
                 break;
             case Event::Type::ended:
+                // A joiner whose connection never completed (the host didn't answer in time) moves on to the next
+                // join code, if there is one. A refusal, or a connection that ended after the welcome, doesn't.
+                if (!hosting && own_port < 0 && event.reason == Reason::timeout && try_index + 1 < tries.size()) {
+                    std::printf("[netplay] candidate %d of %d didn't answer, trying the next\n", (int)try_index + 1, (int)tries.size());
+                    delete session;
+                    session = nullptr;
+                    std::string error;
+                    bool joining = false;
+                    while (!joining && try_index + 1 < tries.size()) {
+                        try_index++;
+                        joining = join_try(sent, error);
+                        if (!joining) {
+                            std::printf("[netplay] candidate %d of %d isn't a join code: %s\n", (int)try_index + 1, (int)tries.size(), error.c_str());
+                        }
+                    }
+                    if (joining) {
+                        status = "Connecting (try " + std::to_string(try_index + 1) + " of " + std::to_string(tries.size()) + ")...";
+                        return Progress::waiting;
+                    }
+                    status = "Couldn't join: " + error;
+                    left = true;
+                    cancel();
+                    return Progress::failed;
+                }
                 std::printf("[netplay] couldn't join: %s (%s)\n", netplay::describe(event.reason), event.detail.c_str());
                 status = std::string("Couldn't join: ") + netplay::describe(event.reason) + ".";
                 left = true;
@@ -537,7 +635,7 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
         status = "Waiting for players: " + std::to_string(joined) + " of " + std::to_string(match_players) + " in.";
     }
     else if (own_port < 0) {
-        status = "Connecting...";
+        status = tries.size() > 1 ? "Connecting (try " + std::to_string(try_index + 1) + " of " + std::to_string(tries.size()) + ")..." : std::string("Connecting...");
     }
     else {
         status = "In, as player " + std::to_string(own_port + 1) + " of " + std::to_string(match_players) +

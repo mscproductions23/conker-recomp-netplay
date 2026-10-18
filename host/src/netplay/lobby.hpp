@@ -32,6 +32,9 @@ namespace conker::netplay_lobby {
         void refresh();
         // The host's join code to show (and copy), or empty for none: only a host's lobby shows it.
         void set_join_code(const std::string& code);
+        // The room server's short code for this match (empty for none) and a line about reaching the host from
+        // outside (the router's port, the room); shown under the join code, hidden when both are empty.
+        void set_room(const std::string& short_code, const std::string& status);
         // A line for the player (a joiner was refused...), shown for a while.
         void show_notice(const std::string& text);
 
@@ -100,6 +103,10 @@ namespace conker::netplay_lobby {
         recompui::Radio* variant_radio = nullptr;
         recompui::Label* hint_label = nullptr;
         std::string join_code;
+        std::string room_code;
+        recompui::Element* room_row = nullptr;
+        recompui::Label* room_label = nullptr;
+        recompui::Button* room_copy = nullptr;
         std::vector<Row> rows;
     };
 }

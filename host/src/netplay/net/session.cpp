@@ -27,6 +27,9 @@ namespace conker::netplay {
         // A joiner that hasn't finished the handshake in this long is dropped (an honest Hello takes a
         // round trip).
         constexpr double handshake_seconds = 3.0;
+        // A joiner's connection to the host gives up in this long, not the library's 10 s: a joiner with several
+        // addresses for the host tries each in turn, so each must fail fast.
+        constexpr int join_timeout_ms = 4000;
         // Connections the host takes at once, joined or not: more are turned away unread.
         constexpr size_t max_connections = 8;
         // What the library buffers from one peer, unread: a message bigger than the largest packet closes
@@ -40,14 +43,19 @@ namespace conker::netplay {
         constexpr int max_pongs_per_second = 20;   // Pong packets one joiner may send the host in a second: more is a broken or hostile peer.
         constexpr int max_lobby_pads_per_second = 40;  // LobbyPad packets one joiner may send the host in a second: more is a broken or hostile peer.
 
-        // The options for every connection, as the host's listen socket or a joiner's connection.
+        // The options for every connection, as the host's listen socket or a joiner's connection: a join may give its own initial timeout.
         struct ConnectionOptions {
-            SteamNetworkingConfigValue_t values[4];
-            ConnectionOptions(void (*status_changed)(SteamNetConnectionStatusChangedCallback_t*)) {
+            SteamNetworkingConfigValue_t values[5];
+            int count = 4;  // how many of values are set
+            ConnectionOptions(void (*status_changed)(SteamNetConnectionStatusChangedCallback_t*), int initial_timeout_ms = 0) {
                 values[0].SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged, (void*)status_changed);
                 values[1].SetInt32(k_ESteamNetworkingConfig_RecvMaxMessageSize, (int32_t)max_packet_size);
                 values[2].SetInt32(k_ESteamNetworkingConfig_RecvBufferSize, recv_buffer_bytes);
                 values[3].SetInt32(k_ESteamNetworkingConfig_RecvBufferMessages, recv_buffer_messages);
+                if (initial_timeout_ms > 0) {
+                    values[count].SetInt32(k_ESteamNetworkingConfig_TimeoutInitial, (int32_t)initial_timeout_ms);
+                    count++;
+                }
             }
         };
 
@@ -265,8 +273,8 @@ namespace conker::netplay {
             const auto& ip = endpoint->ip;
             host_address.SetIPv4((uint32_t)ip[0] << 24 | ip[1] << 16 | ip[2] << 8 | ip[3], endpoint->port);
         }
-        ConnectionOptions options(status_changed);
-        const HSteamNetConnection connection = SteamNetworkingSockets()->ConnectByIPAddress(host_address, 4, options.values);
+        ConnectionOptions options(status_changed, join_timeout_ms);
+        const HSteamNetConnection connection = SteamNetworkingSockets()->ConnectByIPAddress(host_address, options.count, options.values);
         if (connection == k_HSteamNetConnection_Invalid) {
             error = "couldn't connect to the host";
             return false;

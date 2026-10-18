@@ -10,6 +10,7 @@ namespace conker::netplay_helpers {
         std::string address;
         bool own_view_for_everyone = true;
         std::string name;
+        std::string room_server;    // the room server's address (http:// or https://), or empty for none
     };
     Settings load_settings(const std::filesystem::path& folder);
     void save_settings(const std::filesystem::path& folder, const Settings& settings);

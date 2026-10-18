@@ -15,13 +15,25 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
+#include <cstring>
 #include <fstream>
+#include <future>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <SDL.h>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
 
 #include "recompui/recompui.h"
 #include "elements/ui_button.h"
@@ -41,6 +53,8 @@
 #include "lobby.hpp"
 #include "settings.hpp"
 #include "net/join_code.hpp"
+#include "roomclient.hpp"
+#include "upnp.hpp"
 #include "net/session.hpp"
 
 namespace {
@@ -68,6 +82,40 @@ namespace {
         return id.substr(0, space) + " " + commit.substr(0, 7) + (modified ? " (modified)" : "");
     }
 
+    // An IPv4 or IPv6 literal as a join code's endpoint (without its port and key), false if it isn't one.
+    bool parse_ip(const std::string& text, conker::netplay::Endpoint& out) {
+        out = {};
+        in_addr v4{};
+        in6_addr v6{};
+        if (inet_pton(AF_INET, text.c_str(), &v4) == 1) {
+            std::memcpy(out.ip.data(), &v4, 4);
+            return true;
+        }
+        if (inet_pton(AF_INET6, text.c_str(), &v6) == 1) {
+            out.ipv6 = true;
+            std::memcpy(out.ip.data(), &v6, 16);
+            return true;
+        }
+        return false;
+    }
+
+    // What was typed without its spaces and dashes; a room server's short code is 4 to 8 of them, far fewer
+    // than a join code's 24 or 44.
+    std::string without_separators(const std::string& text) {
+        std::string out;
+        for (char c : text) {
+            if (c != ' ' && c != '-') {
+                out.push_back(c);
+            }
+        }
+        return out;
+    }
+
+    bool looks_like_room_code(const std::string& text) {
+        const size_t n = without_separators(text).size();
+        return n >= 4 && n <= 8;
+    }
+
     class NetplayPage : public recompui::Element {
         enum class State { idle, connecting, starting };
         State state = State::idle;
@@ -85,6 +133,15 @@ namespace {
         recompui::Element* host_section = nullptr;
         recompui::Element* join_section = nullptr;
         recompui::Element* display_section = nullptr;
+        recompui::Element* rooms_section = nullptr;
+        recompui::TextInput* room_input = nullptr;
+        std::string room_server_text;           // the room server's address, or empty for none
+        // The host's help from outside, started with the lobby and ended with it: a room (the short code) and
+        // the router's port. Each stops on its own thread, as the router and the server can take seconds.
+        std::shared_ptr<conker::netplay_rooms::Room> room;
+        std::shared_ptr<conker::netplay_upnp::Mapping> upnp;
+        std::future<conker::netplay_rooms::Lookup> lookup;   // a join by short code, waiting for the server
+        bool looking_up = false;
         conker::netplay_lobby::LobbyPanel* lobby_panel = nullptr;
         bool lobby_shown = false;
         int players = 2;
@@ -169,6 +226,7 @@ namespace {
             state = next;
             if (state == State::idle) {
                 hosting = false;
+                stop_outside_help();
             }
             show_code();
             status_label->set_text(status);
@@ -186,6 +244,7 @@ namespace {
                 host_section->set_display(settings);
                 join_section->set_display(settings);
                 display_section->set_display(settings);
+                rooms_section->set_display(settings);
                 host_button->set_enabled(true);
                 join_button->set_enabled(true);
                 host_button->focus();
@@ -197,6 +256,7 @@ namespace {
                 host_section->set_display(settings);
                 join_section->set_display(settings);
                 display_section->set_display(settings);
+                rooms_section->set_display(settings);
             }
             if (lobby && !lobby_shown) {
                 lobby_panel->open(hosting);
@@ -243,7 +303,84 @@ namespace {
             conker::lockstep::set_host(port, players, own_view_for_everyone);
             hosting = true;
             begin();
+            if (state == State::connecting) {
+                start_outside_help(port);
+            }
             show_code();
+        }
+
+        // Hosting: asks the router to forward the port, and the room server for a short code, both in threads.
+        void start_outside_help(int port) {
+            upnp = std::make_shared<conker::netplay_upnp::Mapping>();
+            upnp->start(port);
+            room.reset();
+            if (room_server_text.empty()) {
+                return;
+            }
+            const auto endpoint = conker::netplay::decode_join_code(conker::lockstep::join_code(address_text));
+            if (!endpoint) {
+                return;
+            }
+            char key[17];
+            std::snprintf(key, sizeof(key), "%016llx", (unsigned long long)endpoint->key);
+            // The address typed, then this computer's own; the server adds the one it sees.
+            std::vector<std::string> addrs;
+            conker::netplay::Endpoint ignored;
+            std::string typed = address_text;
+            while (!typed.empty() && typed.back() == ' ') typed.pop_back();
+            while (!typed.empty() && typed.front() == ' ') typed.erase(typed.begin());
+            if (parse_ip(typed, ignored)) {
+                addrs.push_back(typed);
+            }
+            for (const auto& local : addresses) {
+                if (std::find(addrs.begin(), addrs.end(), local.address) == addrs.end()) {
+                    addrs.push_back(local.address);
+                }
+            }
+            addrs.resize(std::min<size_t>(addrs.size(), 6));
+            room = std::make_shared<conker::netplay_rooms::Room>();
+            room->open(room_server_text, key, port, addrs);
+        }
+
+        // Ends them without making the player wait for the router or the server.
+        void stop_outside_help() {
+            if (room || upnp) {
+                std::thread([room = std::move(room), upnp = std::move(upnp)]() {
+                    if (room) room->close();
+                    if (upnp) upnp->stop();
+                }).detach();
+            }
+            room.reset();
+            upnp.reset();
+            lobby_panel->set_room("", "");
+        }
+
+        // What the lobby says of the short code and the router: the code once the room is open.
+        void show_outside_help() {
+            std::string code;
+            std::string status;
+            if (room != nullptr) {
+                if (room->state() == conker::netplay_rooms::Room::State::open) {
+                    code = room->code();
+                    if (code.size() == 6) {
+                        code.insert(3, "-");
+                    }
+                }
+                else if (room->state() == conker::netplay_rooms::Room::State::failed) {
+                    status = "Room server: " + room->error();
+                }
+                else {
+                    status = "Opening a room...";
+                }
+            }
+            if (upnp != nullptr) {
+                const auto state_now = upnp->state();
+                const std::string router = state_now == conker::netplay_upnp::Mapping::State::mapped
+                    ? "Router port open (UPnP)." : state_now == conker::netplay_upnp::Mapping::State::failed
+                    ? upnp->error() : "Asking the router to open the port...";
+                status += std::string(status.empty() ? "" : " ") + router;
+            }
+            lobby_panel->set_room(code, status);
         }
 
         void on_join() {
@@ -251,7 +388,51 @@ namespace {
                 set_state(State::idle, "Type the host's join code first.");
                 return;
             }
+            if (looking_up) {
+                return;
+            }
+            if (looks_like_room_code(join_text)) {
+                if (room_server_text.empty()) {
+                    set_state(State::idle, "A short code needs the room server: its address goes under Room server, below.");
+                    return;
+                }
+                lookup = std::async(std::launch::async, [server = room_server_text, code = join_text]() {
+                    return conker::netplay_rooms::lookup(server, code);
+                });
+                looking_up = true;
+                status_label->set_text("Looking up the room...");
+                queue_update();
+                return;
+            }
             conker::lockstep::set_join(join_text);
+            begin();
+        }
+
+        // The room server answered a short code: the host's addresses worth trying from here become join codes.
+        void finish_lookup(const conker::netplay_rooms::Lookup& found) {
+            if (!found.ok) {
+                set_state(State::idle, found.error);
+                return;
+            }
+            const std::vector<std::string> tries = conker::netplay_helpers::reachable_candidates(found.addrs, addresses);
+            std::vector<std::string> codes;
+            for (const std::string& address : tries) {
+                conker::netplay::Endpoint endpoint;
+                if (parse_ip(address, endpoint)) {
+                    endpoint.port = (uint16_t)found.port;
+                    endpoint.key = std::strtoull(found.key_hex.c_str(), nullptr, 16);
+                    const std::string code = conker::netplay::encode_join_code(endpoint);
+                    if (!code.empty()) {
+                        codes.push_back(code);
+                    }
+                }
+            }
+            if (codes.empty()) {
+                set_state(State::idle, "None of the host's addresses can be reached from here: ask them for a Tailscale address.");
+                return;
+            }
+            conker::netplay_helpers::note("joining by room code: " + std::to_string(codes.size()) + " address(es) to try");
+            conker::lockstep::set_join_candidates(codes);
             begin();
         }
 
@@ -270,6 +451,7 @@ namespace {
             settings.players = players;
             settings.address = address_text;
             settings.own_view_for_everyone = own_view_for_everyone;
+            settings.room_server = room_server_text;
             conker::netplay_helpers::save_settings(folder, settings);
         }
 
@@ -328,12 +510,22 @@ namespace {
             if (e.type != recompui::EventType::Update) {
                 return;
             }
+            if (looking_up) {
+                if (lookup.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    looking_up = false;
+                    finish_lookup(lookup.get());
+                }
+                else {
+                    queue_update();
+                }
+            }
             if (state == State::connecting) {
                 std::string status;
                 switch (conker::lockstep::poll_connect(status)) {
                     case conker::lockstep::Progress::waiting:
                         status_label->set_text(status);
                         lobby_panel->refresh();
+                        show_outside_help();
                         note_status(status);
                         {
                             const std::string notice = conker::lockstep::lobby_notice();
@@ -396,6 +588,7 @@ namespace {
             port_text = std::to_string(saved.port);
             address_text = saved.address;
             own_view_for_everyone = saved.own_view_for_everyone;
+            room_server_text = saved.room_server;
 
             // Hosting.
             recompui::Element* host = column(this, 12.0f);
@@ -513,6 +706,22 @@ namespace {
             join_button = context.create_element<recompui::Button>(join, "Join", recompui::ButtonStyle::Primary);
             join_button->add_pressed_callback([this]() { on_join(); });
             join_hint = text(join, "", Typography::LabelSM, color::TextDim);
+
+            // The room server: with one, a host gets a short code to give out and a joiner can type one.
+            recompui::Element* rooms = column(this, 12.0f);
+            rooms_section = rooms;
+            text(rooms, "Room server (optional)", Typography::LabelLG);
+            recompui::Element* rooms_row = row(rooms);
+            text(rooms_row, "Address", Typography::LabelMD);
+            room_input = input(rooms_row, room_server_text, 520.0f);
+            room_input->add_text_changed_callback([this](const std::string& value) {
+                room_server_text = value;
+                save_settings();
+            });
+            text(rooms, "A room server turns the long join code into a short one such as K7Q-F2M, and tries the host's "
+                "Tailscale, home-network and public addresses for you. Type the address of one that someone runs "
+                "(it starts with https:// or http://), the same on every computer. Leave it empty to use the long "
+                "join codes.", Typography::Body, color::TextDim);
 
             // What this window shows of the split screen.
             recompui::Element* display = column(this, 12.0f);
