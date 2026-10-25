@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
@@ -53,6 +54,7 @@
 #include "lobby.hpp"
 #include "settings.hpp"
 #include "net/join_code.hpp"
+#include "controller_view.hpp"
 #include "roomclient.hpp"
 #include "upnp.hpp"
 #include "net/session.hpp"
@@ -130,10 +132,15 @@ namespace {
         recompui::Button* join_button = nullptr;
         recompui::Button* cancel_button = nullptr;
         // The sections that make way for the lobby while connecting, and the lobby itself.
-        recompui::Element* host_section = nullptr;
-        recompui::Element* join_section = nullptr;
-        recompui::Element* display_section = nullptr;
-        recompui::Element* rooms_section = nullptr;
+        recompui::Label* hero_subtitle = nullptr;
+        recompui::Element* idle_area = nullptr;         // everything but the lobby and the status line
+        recompui::Element* options_box = nullptr;
+        recompui::Button* more_button = nullptr;
+        bool options_open = false;
+        bool visible = false;                 // the page is on screen
+        conker::netplay_view_pad::ControllerView* own_pad = nullptr;   // the player's own controller, live
+        recompui::Label* own_pad_label = nullptr;
+        std::string own_pad_name;
         recompui::TextInput* room_input = nullptr;
         std::string room_server_text;           // the room server's address, or empty for none
         // The host's help from outside, started with the lobby and ended with it: a room (the short code) and
@@ -186,6 +193,25 @@ namespace {
             return box;
         }
 
+        // A panel: a rounded, slightly lifted box with a stripe of colour along its top edge.
+        recompui::Element* card(recompui::Element* parent, const recompui::Color& stripe) {
+            recompui::Element* box = recompui::get_current_context().create_element<recompui::Element>(parent);
+            box->set_display(recompui::Display::Flex);
+            box->set_flex_direction(recompui::FlexDirection::Column);
+            box->set_align_items(recompui::AlignItems::FlexStart);
+            box->set_gap(16.0f);
+            box->set_width(100.0f, recompui::Unit::Percent);
+            box->set_padding(26.0f);
+            box->set_border_radius(20.0f);
+            box->set_background_color(recompui::theme::color::Background2);
+            box->set_border_width(2.0f);
+            box->set_border_color(recompui::Color{255, 255, 255, 22});
+            box->set_border_top_width(5.0f);
+            box->set_border_top_color(stripe);
+            box->set_flex_shrink(0.0f);
+            return box;
+        }
+
         recompui::TextInput* input(recompui::Element* parent, const std::string& value, float width) {
             recompui::TextInput* field = recompui::get_current_context().create_element<recompui::TextInput>(parent);
             field->set_width(width);
@@ -234,29 +260,26 @@ namespace {
             // navigating from a hidden element throws in the nav tree.
             const bool lobby = state == State::connecting;
             const recompui::Display settings = lobby ? recompui::Display::None : recompui::Display::Flex;
+            hero_subtitle->set_display(lobby ? recompui::Display::None : recompui::Display::Block);
             if (lobby) {
                 // Focus goes to Copy diagnostics, which a held key or pad button can press without harm (Cancel
                 // would leave the lobby).
                 cancel_button->set_display(recompui::Display::Flex);
+                diag_button->set_display(recompui::Display::Flex);
                 diag_button->focus();
             }
             else {
-                host_section->set_display(settings);
-                join_section->set_display(settings);
-                display_section->set_display(settings);
-                rooms_section->set_display(settings);
+                idle_area->set_display(settings);
                 host_button->set_enabled(true);
                 join_button->set_enabled(true);
                 host_button->focus();
                 cancel_button->set_display(recompui::Display::None);
+                diag_button->set_display(recompui::Display::None);
             }
             if (lobby) {
                 host_button->set_enabled(false);
                 join_button->set_enabled(false);
-                host_section->set_display(settings);
-                join_section->set_display(settings);
-                display_section->set_display(settings);
-                rooms_section->set_display(settings);
+                idle_area->set_display(settings);
             }
             if (lobby && !lobby_shown) {
                 lobby_panel->open(hosting);
@@ -510,6 +533,10 @@ namespace {
             if (e.type != recompui::EventType::Update) {
                 return;
             }
+            if (visible && state == State::idle && own_pad != nullptr) {
+                show_own_controller();
+                queue_update();     // again next frame while the page is on screen
+            }
             if (looking_up) {
                 if (lookup.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     looking_up = false;
@@ -571,16 +598,8 @@ namespace {
             // Taller than the window (the lobby with four players): scroll, don't squash.
             set_overflow_y(recompui::Overflow::Auto);
 
-            recompui::Element* intro = column(this, 8.0f);
-            text(intro, "Netplay", Typography::Header3);
-            text(intro, "Play multiplayer over the internet: everyone runs the game, and every player's controller "
-                "is passed to the others. Everyone needs this same build and the same ROM, with no mods on (texture "
-                "packs are fine). You play with your first controller; the game starts from the "
-                "beginning, with an empty save.",
-                Typography::Body, color::TextDim);
-
-            text(intro, "Build " + short_build() + ". Everyone in a match needs the same one: compare this line.",
-                Typography::LabelSM, color::TextDim);
+            using recompui::Color;
+            const Color orange{255, 150, 64, 255};
 
             // What this player picked last time.
             const conker::netplay_helpers::Settings saved = conker::netplay_helpers::load_settings(recomp::get_config_path());
@@ -590,13 +609,46 @@ namespace {
             own_view_for_everyone = saved.own_view_for_everyone;
             room_server_text = saved.room_server;
 
+            // The header: what this page is for, and the build (everyone in a match needs the same one).
+            recompui::Element* hero = row(this);
+            hero->set_width(100.0f, recompui::Unit::Percent);
+            hero->set_justify_content(recompui::JustifyContent::SpaceBetween);
+            recompui::Element* title_box = column(hero, 6.0f);
+            title_box->set_width_auto();
+            recompui::Label* title = text(title_box, "Play online", Typography::Header1);
+            title->set_color(orange);
+            hero_subtitle = text(title_box, "Host a room, send the code, play. Everyone needs this same build and their own US ROM.",
+                Typography::Body, color::TextDim);
+            recompui::Element* build_tag = row(hero);
+            build_tag->set_padding_left(16.0f);
+            build_tag->set_padding_right(16.0f);
+            build_tag->set_padding_top(8.0f);
+            build_tag->set_padding_bottom(8.0f);
+            build_tag->set_border_radius(999.0f);
+            build_tag->set_background_color(Color{255, 255, 255, 22});
+            text(build_tag, "BUILD " + short_build(), Typography::LabelSM, color::TextDim)->set_letter_spacing(1.5f);
+
+            // Everything that isn't the lobby, hidden while connecting.
+            recompui::Element* idle = column(this, 24.0f);
+            idle_area = idle;
+            recompui::Element* columns = row(idle);
+            columns->set_width(100.0f, recompui::Unit::Percent);
+            columns->set_align_items(recompui::AlignItems::FlexStart);
+            columns->set_gap(28.0f);
+            recompui::Element* left = column(columns, 22.0f);
+            left->set_width(1000.0f);
+            left->set_min_width(1000.0f);
+            recompui::Element* right = column(columns, 22.0f);
+            right->set_width(620.0f);
+            right->set_min_width(620.0f);
+
             // Hosting.
-            recompui::Element* host = column(this, 12.0f);
-            host_section = host;
-            text(host, "Host a match", Typography::LabelLG);
-            recompui::Element* host_row = row(host);
-            text(host_row, "Players", Typography::LabelMD);
-            recompui::Radio* count_radio = context.create_element<recompui::Radio>(host_row);
+            recompui::Element* host = card(left, orange);
+            text(host, "Host a room", Typography::Header3);
+            text(host, "Friends join with a code. You pick the game in the lobby.", Typography::Body, color::TextDim);
+            recompui::Element* count_row = row(host);
+            text(count_row, "Players", Typography::LabelMD);
+            recompui::Radio* count_radio = context.create_element<recompui::Radio>(count_row);
             for (int n = 2; n <= conker::netplay::max_players; n++) {
                 count_radio->add_option(std::to_string(n));
             }
@@ -605,21 +657,16 @@ namespace {
                 players = 2 + (int)index;
                 save_settings();
             });
-            text(host_row, "UDP port", Typography::LabelMD);
-            port_input = input(host_row, port_text, 120.0f);
-            port_input->add_text_changed_callback([this](const std::string& value) {
-                port_text = value;
-                save_settings();
-            });
-            text(host_row, "Your address", Typography::LabelMD);
-            address_input = input(host_row, address_text, 320.0f);
+            // Where friends reach you: this computer's own addresses (Tailscale first: its friends need no router
+            // setup), or one typed in.
+            recompui::Element* address_row = row(host);
+            text(address_row, "Reach me at", Typography::LabelMD);
+            address_input = input(address_row, address_text, 280.0f);
             address_input->add_text_changed_callback([this](const std::string& value) {
                 address_text = value;
                 save_settings();
                 show_code();
             });
-            // This computer's addresses, to pick one instead of looking it up: Tailscale first (the friends on the
-            // same Tailscale network reach it without opening anything), then the home network.
             addresses = conker::netplay_helpers::local_addresses();
             if (!addresses.empty()) {
                 recompui::Element* picker_row = row(host);
@@ -632,7 +679,7 @@ namespace {
                         pick = (int)i;
                     }
                 }
-                address_radio->add_option("Other: type it above");
+                address_radio->add_option("Other");
                 if (pick < 0) {
                     // Nothing typed (or an address from another network): the best one found.
                     pick = address_text.empty() ? 0 : (int)addresses.size();
@@ -652,41 +699,26 @@ namespace {
                     }
                 });
             }
-            recompui::Element* screens_row = row(host);
-            text(screens_row, "Screens", Typography::LabelMD);
-            recompui::Radio* screens_radio = context.create_element<recompui::Radio>(screens_row);
-            screens_radio->add_option("Everyone sees only their own view");
-            screens_radio->add_option("Players choose");
-            screens_radio->set_index(own_view_for_everyone ? 0 : 1);
-            screens_radio->add_index_changed_callback([this](uint32_t index) {
-                own_view_for_everyone = index == 0;
-                save_settings();
-            });
+            host_button = context.create_element<recompui::Button>(host, "Host a room", recompui::ButtonStyle::Primary);
+            host_button->add_pressed_callback([this]() { on_host(); });
+            // The code row is kept (show_code fills it) but the lobby is where the code is shown.
             recompui::Element* code_row = row(host);
+            code_row->set_display(recompui::Display::None);
             code_label = text(code_row, "", Typography::LabelMD);
             copy_button = context.create_element<recompui::Button>(code_row, "Copy", recompui::ButtonStyle::Tertiary);
             copy_button->add_pressed_callback([this]() {
-                // Said on the button: the status line is busy while waiting for players.
                 if (!shown_code.empty() && SDL_SetClipboardText(shown_code.c_str()) == 0) {
                     copy_button->set_text("Copied");
                     queue_update();
                 }
             });
-            text(host, "The others connect to that port on your computer: if you're behind a router, forward it "
-                "(UDP) to this computer. Look up your public address on any \"what is my IP\" site; at home, "
-                "your local one works too.", Typography::Body, color::TextDim);
-            text(host, "The join code is your IP address (with a key for this match): only share it with people you "
-                "trust. Joining a match shows the host your IP address too.", Typography::Body, color::TextDim);
-            host_button = context.create_element<recompui::Button>(host, "Host", recompui::ButtonStyle::Primary);
-            host_button->add_pressed_callback([this]() { on_host(); });
 
             // Joining.
-            recompui::Element* join = column(this, 12.0f);
-            join_section = join;
-            text(join, "Join a match", Typography::LabelLG);
+            recompui::Element* join = card(left, Color{64, 176, 255, 255});
+            text(join, "Join a room", Typography::Header3);
+            text(join, "Paste the code the host sent you: the long join code, or a short room code.", Typography::Body, color::TextDim);
             recompui::Element* join_row = row(join);
-            text(join_row, "Join code", Typography::LabelMD);
-            join_input = input(join_row, "", 520.0f);
+            join_input = input(join_row, "", 560.0f);
             join_input->add_text_changed_callback([this](const std::string& value) { join_text = value; });
             recompui::Button* paste_button = context.create_element<recompui::Button>(join_row, "Paste", recompui::ButtonStyle::Tertiary);
             paste_button->add_pressed_callback([this]() {
@@ -703,39 +735,66 @@ namespace {
                     queue_update();     // which applies the field's new value
                 }
             });
-            join_button = context.create_element<recompui::Button>(join, "Join", recompui::ButtonStyle::Primary);
+            join_button = context.create_element<recompui::Button>(join_row, "Join", recompui::ButtonStyle::Primary);
             join_button->add_pressed_callback([this]() { on_join(); });
             join_hint = text(join, "", Typography::LabelSM, color::TextDim);
 
-            // The room server: with one, a host gets a short code to give out and a joiner can type one.
-            recompui::Element* rooms = column(this, 12.0f);
-            rooms_section = rooms;
-            text(rooms, "Room server (optional)", Typography::LabelLG);
-            recompui::Element* rooms_row = row(rooms);
-            text(rooms_row, "Address", Typography::LabelMD);
-            room_input = input(rooms_row, room_server_text, 520.0f);
-            room_input->add_text_changed_callback([this](const std::string& value) {
-                room_server_text = value;
+            // The player's own controller, live: press a button and it lights, so a pad that doesn't answer shows
+            // before anyone is waiting.
+            recompui::Element* mine = card(right, Color{96, 214, 128, 255});
+            text(mine, "Your controller", Typography::Header3);
+            own_pad_label = text(mine, "", Typography::Body, color::TextDim);
+            own_pad = context.create_element<conker::netplay_view_pad::ControllerView>(mine, 460.0f, Color{96, 214, 128, 255});
+            text(mine, "Press buttons to test them. Players use their first controller.", Typography::LabelSM, color::TextDim);
+
+            // The rest of the settings, out of the way.
+            recompui::Element* more_row = row(idle);
+            more_button = context.create_element<recompui::Button>(more_row, "More options", recompui::ButtonStyle::Tertiary);
+            more_button->add_pressed_callback([this]() {
+                options_open = !options_open;
+                options_box->set_display(options_open ? recompui::Display::Flex : recompui::Display::None);
+                more_button->set_text(options_open ? "Fewer options" : "More options");
+            });
+            options_box = card(idle, Color{255, 255, 255, 60});
+            options_box->set_display(recompui::Display::None);
+            text(options_box, "More options", Typography::Header3);
+            recompui::Element* port_row = row(options_box);
+            text(port_row, "UDP port", Typography::LabelMD);
+            port_input = input(port_row, port_text, 120.0f);
+            port_input->add_text_changed_callback([this](const std::string& value) {
+                port_text = value;
                 save_settings();
             });
-            text(rooms, "A room server turns the long join code into a short one such as K7Q-F2M, and tries the host's "
-                "Tailscale, home-network and public addresses for you. Type the address of one that someone runs "
-                "(it starts with https:// or http://), the same on every computer. Leave it empty to use the long "
-                "join codes.", Typography::Body, color::TextDim);
-
-            // What this window shows of the split screen.
-            recompui::Element* display = column(this, 12.0f);
-            display_section = display;
-            text(display, "Your screen", Typography::LabelLG);
-            recompui::Radio* display_radio = context.create_element<recompui::Radio>(display);
+            text(port_row, "The port friends connect to; forward it (UDP) on your router if you can't use Tailscale.",
+                Typography::LabelSM, color::TextDim);
+            recompui::Element* screens_row = row(options_box);
+            text(screens_row, "Screens", Typography::LabelMD);
+            recompui::Radio* screens_radio = context.create_element<recompui::Radio>(screens_row);
+            screens_radio->add_option("Everyone sees only their own view");
+            screens_radio->add_option("Players choose");
+            screens_radio->set_index(own_view_for_everyone ? 0 : 1);
+            screens_radio->add_index_changed_callback([this](uint32_t index) {
+                own_view_for_everyone = index == 0;
+                save_settings();
+            });
+            recompui::Element* display_row = row(options_box);
+            text(display_row, "Your screen", Typography::LabelMD);
+            recompui::Radio* display_radio = context.create_element<recompui::Radio>(display_row);
             display_radio->add_option("Split screen");
             display_radio->add_option("My view only");
             display_radio->set_index(conker::netplay_view::is_mine_only() ? 1 : 0);
             display_radio->add_index_changed_callback([](uint32_t index) { conker::netplay_view::set_mine_only(index == 1); });
-            text(display, "Every player's view is still drawn on every machine (that's what keeps the games the same): "
-                "\"My view only\" shows just yours, across the whole window. When the host's rule for the match is "
-                "that everyone sees only their own view (Screens), that's what you get, whatever you pick here.",
-                Typography::Body, color::TextDim);
+            recompui::Element* server_row = row(options_box);
+            text(server_row, "Room server", Typography::LabelMD);
+            room_input = input(server_row, room_server_text, 520.0f);
+            room_input->add_text_changed_callback([this](const std::string& value) {
+                room_server_text = value;
+                save_settings();
+            });
+            text(options_box, "A room server turns the long join code into a short one such as K7Q-F2M, and tries the host's "
+                "Tailscale, home-network and public addresses for you. Type the address of one that someone runs (it starts "
+                "with https:// or http://), the same on every computer; empty means the long join codes only.",
+                Typography::LabelSM, color::TextDim);
 
             // The lobby, in place of the settings above while connecting.
             lobby_panel = context.create_element<conker::netplay_lobby::LobbyPanel>(this);
@@ -751,6 +810,40 @@ namespace {
             show_code();
             refresh_clipboard();
             queue_update();
+        }
+
+        // The player's own controller, read as the game would: the same drawing the others see in the lobby.
+        void show_own_controller() {
+            uint16_t buttons = 0;
+            float x = 0.0f;
+            float y = 0.0f;
+            if (!conker::frontend::read_local_pad(&buttons, &x, &y)) {
+                return;
+            }
+            conker::netplay::Pad pad;
+            pad.buttons = buttons & (uint16_t)~conker::netplay::reserved_buttons;
+            pad.stick_x = (int8_t)std::lround(std::clamp(x, -1.0f, 1.0f) * 80.0f);
+            pad.stick_y = (int8_t)std::lround(std::clamp(y, -1.0f, 1.0f) * 80.0f);
+            own_pad->show(pad);
+            _SDL_GameController* controller = conker::frontend::primary_controller();
+            std::string name = "No controller found: the keyboard is used (Space is A, Return is Start, WASD is the stick).";
+            if (controller != nullptr) {
+                const char* sdl_name = SDL_GameControllerName(controller);
+                name = std::string(sdl_name != nullptr ? sdl_name : "Controller") + " (" +
+                    conker::controller_glyphs::info_of(controller).name + ")";
+            }
+            if (name != own_pad_name) {
+                own_pad_name = name;
+                own_pad_label->set_text(name);
+            }
+        }
+
+        // The page is on screen: its live controller is drawn only then, as reading the pad polls the inputs.
+        void set_visible(bool shown) {
+            visible = shown;
+            if (shown) {
+                queue_update();
+            }
         }
 
         // A join code on the clipboard fills the join box when the page opens, so joining is one press.
@@ -812,12 +905,14 @@ void conker::netplay_menu::open() {
         // Closing it while connecting gives up.
         modal->set_on_close_callback([]() {
             if (page != nullptr) {
+                page->set_visible(false);
                 page->cancel_if_connecting();
             }
         });
     }
     if (page != nullptr) {
         page->refresh_clipboard();
+        page->set_visible(true);
     }
     modal->open();
 }

@@ -9,29 +9,14 @@
 #include "librecomp/game.hpp"
 
 #include "../conker.hpp"
+#include "controller_view.hpp"
 #include "lockstep.hpp"
 #include "settings.hpp"
 
 namespace {
     using recompui::theme::Typography;
     using recompui::theme::color;
-
-    // The N64 pad's buttons, in the order of a player's pad view, with the bits the game reads them by.
-    struct ChipDef {
-        const char* label;
-        uint16_t mask;
-    };
-    constexpr ChipDef chip_defs[] = {
-        { "A", 0x8000 }, { "B", 0x4000 }, { "Z", 0x2000 }, { "St", 0x1000 },
-        { "L", 0x0020 }, { "R", 0x0010 },
-        { "C^", 0x0008 }, { "Cv", 0x0004 }, { "C<", 0x0002 }, { "C>", 0x0001 },
-        { "D^", 0x0800 }, { "Dv", 0x0400 }, { "D<", 0x0200 }, { "D>", 0x0100 },
-    };
-
-    // The stick's square, and how far the dot may move from its middle, in dp.
-    constexpr float stick_size = 44.0f;
-    constexpr float stick_dot = 10.0f;
-    constexpr float stick_reach = (stick_size - stick_dot) / 2.0f - 2.0f;
+    using recompui::Color;
 
     // How often a player's own pad is sent: when it changes, at most this often; and at least this often.
     constexpr uint32_t pad_min_gap_ms = 66;
@@ -72,6 +57,33 @@ namespace {
         }
     }
 
+    // The players' colours as plain colours, for the drawings.
+    recompui::Color player_rgb(int port) {
+        static const recompui::Color colors[] = {
+            { 64, 176, 255, 255 }, { 255, 112, 56, 255 }, { 96, 214, 128, 255 }, { 232, 196, 64, 255 },
+        };
+        return colors[std::clamp(port, 0, 3)];
+    }
+
+    // A small rounded tag with a label in it: a slot, a role, a state. Its label is returned so the text can change.
+    conker::netplay_lobby::Pill pill(recompui::Element* parent, const std::string& words, const recompui::Color& fill, const recompui::Color& ink) {
+        recompui::Element* tag = recompui::get_current_context().create_element<recompui::Element>(parent);
+        tag->set_display(recompui::Display::Flex);
+        tag->set_align_items(recompui::AlignItems::Center);
+        tag->set_padding_left(14.0f);
+        tag->set_padding_right(14.0f);
+        tag->set_padding_top(5.0f);
+        tag->set_padding_bottom(5.0f);
+        tag->set_border_radius(999.0f);
+        tag->set_background_color(fill);
+        tag->set_flex_shrink(0.0f);
+        recompui::Label* label = recompui::get_current_context().create_element<recompui::Label>(tag, words, Typography::LabelSM);
+        label->set_color(ink);
+        label->set_letter_spacing(1.5f);
+        label->set_white_space(recompui::WhiteSpace::Nowrap);
+        return { tag, label };
+    }
+
     // A connection's colour: good, so-so, poor.
     recompui::theme::color ping_color(int ping_ms) {
         return ping_ms <= 60 ? color::Success : (ping_ms <= 120 ? color::Warning : color::Danger);
@@ -87,31 +99,48 @@ namespace conker::netplay_lobby {
         set_gap(18.0f);
         set_width(100.0f, recompui::Unit::Percent);
 
-        text(this, "Lobby", Typography::LabelLG);
-        count_label = text(this, "", Typography::LabelMD, color::TextDim);
+        recompui::Element* heading = box(this, recompui::FlexDirection::Row, 18.0f);
+        heading->set_width(100.0f, recompui::Unit::Percent);
+        heading->set_justify_content(recompui::JustifyContent::SpaceBetween);
+        text(heading, "Lobby", Typography::Header2)->set_color(Color{255, 150, 64, 255});
+        count_label = text(heading, "", Typography::LabelMD, color::TextDim);
 
-        // The host's join code, to send the others.
-        recompui::Element* code_row = box(this, recompui::FlexDirection::Row, 16.0f);
-        code_label = text(code_row, "", Typography::LabelMD);
-        code_copy = context.create_element<recompui::Button>(code_row, "Copy", recompui::ButtonStyle::Tertiary);
+        // The code to send the others (the host's): the short room code when there is one, big, and the long join
+        // code under it; and how reaching the host from outside is going (the router's port, the room).
+        share_card = box(this, recompui::FlexDirection::Row, 28.0f);
+        share_card->set_width(100.0f, recompui::Unit::Percent);
+        share_card->set_justify_content(recompui::JustifyContent::SpaceBetween);
+        share_card->set_padding(24.0f);
+        share_card->set_border_radius(20.0f);
+        share_card->set_background_color(color::Background2);
+        share_card->set_border_width(2.0f);
+        share_card->set_border_color(Color{255, 255, 255, 22});
+        share_card->set_border_top_width(5.0f);
+        share_card->set_border_top_color(Color{255, 150, 64, 255});
+        recompui::Element* share_text = box(share_card, recompui::FlexDirection::Column, 8.0f);
+        share_text->set_align_items(recompui::AlignItems::FlexStart);
+        code_caption = text(share_text, "", Typography::LabelSM, color::TextDim);
+        code_caption->set_letter_spacing(2.0f);
+        code_big = text(share_text, "", Typography::Header1);
+        code_big->set_letter_spacing(6.0f);
+        code_small = text(share_text, "", Typography::LabelSM, color::TextDim);
+        room_status = text(share_text, "", Typography::LabelSM, color::TextDim);
+        recompui::Element* share_buttons = box(share_card, recompui::FlexDirection::Column, 10.0f);
+        share_buttons->set_align_items(recompui::AlignItems::Stretch);
+        code_copy = context.create_element<recompui::Button>(share_buttons, "Copy code", recompui::ButtonStyle::Primary);
         code_copy->add_pressed_callback([this]() {
-            if (!join_code.empty() && SDL_SetClipboardText(join_code.c_str()) == 0) {
+            const std::string& big = room_code.empty() ? join_code : room_code;
+            if (!big.empty() && SDL_SetClipboardText(big.c_str()) == 0) {
                 code_copy->set_text("Copied");
             }
         });
-        code_copy->set_display(recompui::Display::None);
-
-        // The short code from the room server, and how reaching the host from outside is going (the router's port).
-        room_row = box(this, recompui::FlexDirection::Row, 16.0f);
-        room_label = text(room_row, "", Typography::LabelMD);
-        room_copy = context.create_element<recompui::Button>(room_row, "Copy", recompui::ButtonStyle::Tertiary);
-        room_copy->add_pressed_callback([this]() {
-            if (!room_code.empty() && SDL_SetClipboardText(room_code.c_str()) == 0) {
-                room_copy->set_text("Copied");
+        long_copy = context.create_element<recompui::Button>(share_buttons, "Copy long code", recompui::ButtonStyle::Tertiary);
+        long_copy->add_pressed_callback([this]() {
+            if (!join_code.empty() && SDL_SetClipboardText(join_code.c_str()) == 0) {
+                long_copy->set_text("Copied");
             }
         });
-        room_copy->set_display(recompui::Display::None);
-        room_row->set_display(recompui::Display::None);
+        share_card->set_display(recompui::Display::None);
 
         // Something that happened: a joiner was refused...
         notice_label = text(this, "", Typography::LabelMD, color::Warning);
@@ -128,69 +157,37 @@ namespace conker::netplay_lobby {
         ready_button = context.create_element<recompui::Button>(name_row, "I'm ready", recompui::ButtonStyle::Primary);
         ready_button->add_pressed_callback([this]() { on_ready_pressed(); });
 
-        // Who is in: one row for each of the game's four ports, each with a live pad under it.
-        recompui::Element* list = box(this, recompui::FlexDirection::Column, 10.0f);
+        // Who is in: a card for each of the game's four ports, with the player's controller drawn live beside
+        // their name, so what they press is what lights up.
+        recompui::Element* list = box(this, recompui::FlexDirection::Row, 18.0f);
         list->set_width(100.0f, recompui::Unit::Percent);
         list->set_align_items(recompui::AlignItems::Stretch);
+        list->set_flex_wrap(recompui::FlexWrap::Wrap);
         rows.resize(netplay::max_players);
         for (int i = 0; i < netplay::max_players; i++) {
             Row& row = rows[i];
-            row.box = box(list, recompui::FlexDirection::Column, 8.0f);
-            row.box->set_align_items(recompui::AlignItems::Stretch);
-            row.box->set_padding(14.0f);
-            row.box->set_border_radius(recompui::theme::border::radius_md);
-            row.box->set_background_color(color::ElevatedSoft);
+            row.box = box(list, recompui::FlexDirection::Row, 22.0f);
+            row.box->set_width(48.5f, recompui::Unit::Percent);
+            row.box->set_padding(16.0f);
+            row.box->set_border_radius(18.0f);
+            row.box->set_background_color(color::Background2);
+            row.box->set_border_width(2.0f);
+            row.box->set_border_color(color::BorderSoft);
 
-            recompui::Element* line = box(row.box, recompui::FlexDirection::Row, 18.0f);
-            row.bar = context.create_element<recompui::Element>(line);
-            row.bar->set_width(6.0f);
-            row.bar->set_min_width(6.0f);
-            row.bar->set_height(34.0f);
-            row.bar->set_border_radius(3.0f);
-            row.bar->set_background_color(player_color(i));
-            row.slot = text(line, "Player " + std::to_string(i + 1), Typography::LabelMD, color::TextDim);
-            row.slot->set_min_width(90.0f);
-            row.name = text(line, "", Typography::LabelLG);
-            row.name->set_min_width(260.0f);
-            row.role = text(line, "", Typography::LabelSM, color::Secondary);
-            row.role->set_min_width(90.0f);
-            row.device = text(line, "", Typography::LabelSM, color::TextDim);
-            row.device->set_min_width(190.0f);
-            row.ping = text(line, "", Typography::LabelSM, color::TextDim);
-            row.ping->set_min_width(130.0f);
-            row.status = text(line, "", Typography::LabelMD, color::TextDim);
+            const Color accent = player_rgb(i);
+            row.view = context.create_element<conker::netplay_view_pad::ControllerView>(row.box, 240.0f, accent);
 
-            // The pad: a chip for each button and the stick as a dot, lit as the player presses them.
-            PadView& pad = row.pad;
-            pad.box = box(row.box, recompui::FlexDirection::Row, 6.0f);
-            pad.box->set_display(recompui::Display::None);
-            for (int k = 0; k < pad_chips; k++) {
-                pad.chip_boxes[k] = box(pad.box, recompui::FlexDirection::Column, 0.0f);
-                pad.chip_boxes[k]->set_width(34.0f);
-                pad.chip_boxes[k]->set_min_width(34.0f);
-                pad.chip_boxes[k]->set_height(26.0f);
-                pad.chip_boxes[k]->set_justify_content(recompui::JustifyContent::Center);
-                pad.chip_boxes[k]->set_border_radius(recompui::theme::border::radius_sm);
-                pad.chip_boxes[k]->set_background_color(color::ElevatedSoft);
-                pad.chip_labels[k] = text(pad.chip_boxes[k], chip_defs[k].label, Typography::LabelSM, color::TextDim);
-            }
-            recompui::Element* stick = context.create_element<recompui::Element>(pad.box);
-            stick->set_position(recompui::Position::Relative);
-            stick->set_width(stick_size);
-            stick->set_min_width(stick_size);
-            stick->set_height(stick_size);
-            stick->set_margin_left(12.0f);
-            stick->set_border_radius(8.0f);
-            stick->set_border_width(1.5f);
-            stick->set_border_color(color::Border);
-            pad.dot = context.create_element<recompui::Element>(stick);
-            pad.dot->set_position(recompui::Position::Absolute);
-            pad.dot->set_width(stick_dot);
-            pad.dot->set_height(stick_dot);
-            pad.dot->set_border_radius(stick_dot / 2.0f);
-            pad.dot->set_background_color(player_color(i));
-            pad.dot->set_left((stick_size - stick_dot) / 2.0f - 1.5f);
-            pad.dot->set_top((stick_size - stick_dot) / 2.0f - 1.5f);
+            recompui::Element* info = box(row.box, recompui::FlexDirection::Column, 10.0f);
+            info->set_align_items(recompui::AlignItems::FlexStart);
+            info->set_flex_grow(1.0f);
+            recompui::Element* head = box(info, recompui::FlexDirection::Row, 14.0f);
+            row.slot = pill(head, "P" + std::to_string(i + 1), accent, Color{16, 12, 20, 255});
+            row.name = text(head, "", Typography::Header3);
+            row.role = pill(head, "", Color{255, 255, 255, 30}, Color{246, 241, 235, 255});
+            recompui::Element* details = box(info, recompui::FlexDirection::Row, 22.0f);
+            row.device = text(details, "", Typography::LabelMD, color::TextDim);
+            row.ping = text(details, "", Typography::LabelMD, color::TextDim);
+            row.status = pill(info, "", Color{255, 255, 255, 30}, Color{246, 241, 235, 255});
         }
 
         // The input delay: the host's to choose (by default from everyone's ping).
@@ -236,6 +233,7 @@ namespace conker::netplay_lobby {
 
     void LobbyPanel::open(bool as_host) {
         hosting = as_host;
+        refresh_codes();
         ready = false;
         own_name = conker::netplay_helpers::load_settings(recomp::get_config_path()).name;
         name_input->set_text(own_name);
@@ -271,26 +269,36 @@ namespace conker::netplay_lobby {
     }
 
     void LobbyPanel::set_join_code(const std::string& code) {
-        if (code != join_code) {
-            code_copy->set_text("Copy");
-        }
         join_code = code;
-        code_label->set_text(code.empty() ? std::string() : "Join code: " + code);
-        code_copy->set_display(code.empty() ? recompui::Display::None : recompui::Display::Flex);
+        refresh_codes();
     }
 
     void LobbyPanel::set_room(const std::string& short_code, const std::string& status) {
-        if (short_code != room_code) {
-            room_copy->set_text("Copy");
-        }
         room_code = short_code;
-        std::string line = short_code.empty() ? std::string() : "Short code: " + short_code;
-        if (!status.empty()) {
-            line += std::string(line.empty() ? "" : "  -  ") + status;
+        room_status_text = status;
+        refresh_codes();
+    }
+
+    // What the share card shows: the room code big if there is one, else the long join code; and the router's news.
+    void LobbyPanel::refresh_codes() {
+        const std::string& big = room_code.empty() ? join_code : room_code;
+        if (big != shown_big) {
+            code_copy->set_text("Copy code");
+            shown_big = big;
         }
-        room_label->set_text(line);
-        room_copy->set_display(short_code.empty() ? recompui::Display::None : recompui::Display::Flex);
-        room_row->set_display(line.empty() ? recompui::Display::None : recompui::Display::Flex);
+        if (join_code != shown_long) {
+            long_copy->set_text("Copy long code");
+            shown_long = join_code;
+        }
+        code_caption->set_text(room_code.empty() ? "JOIN CODE" : "ROOM CODE");
+        code_big->set_text(big);
+        code_big->set_font_size(room_code.empty() ? 30.0f : 54.0f);
+        const std::string small = !room_code.empty() && !join_code.empty() ? "Or the long join code: " + join_code : std::string();
+        code_small->set_text(small);
+        code_small->set_display(small.empty() ? recompui::Display::None : recompui::Display::Block);
+        room_status->set_text(room_status_text);
+        long_copy->set_display(!room_code.empty() && !join_code.empty() ? recompui::Display::Flex : recompui::Display::None);
+        share_card->set_display(hosting && (!big.empty() || !room_status_text.empty()) ? recompui::Display::Flex : recompui::Display::None);
     }
 
     void LobbyPanel::show_notice(const std::string& text_to_show) {
@@ -350,19 +358,6 @@ namespace conker::netplay_lobby {
         }
     }
 
-    void LobbyPanel::show_pad(PadView& view, const netplay::Pad& pad) {
-        for (int k = 0; k < pad_chips; k++) {
-            const bool down = (pad.buttons & chip_defs[k].mask) != 0;
-            view.chip_boxes[k]->set_background_color(down ? color::Primary : color::ElevatedSoft);
-            view.chip_labels[k]->set_color(down ? color::White : color::TextDim);
-        }
-        const float x = std::clamp(pad.stick_x / 80.0f, -1.0f, 1.0f);
-        const float y = std::clamp(pad.stick_y / 80.0f, -1.0f, 1.0f);
-        const float middle = (stick_size - stick_dot) / 2.0f - 1.5f;
-        view.dot->set_left(middle + x * stick_reach);
-        view.dot->set_top(middle - y * stick_reach);     // the stick's up is positive
-    }
-
     void LobbyPanel::on_name_changed(const std::string& value) {
         own_name = value.substr(0, netplay::name_size);
         const std::filesystem::path folder = recomp::get_config_path();
@@ -416,27 +411,40 @@ namespace conker::netplay_lobby {
                 continue;
             }
             const conker::lockstep::LobbyEntry& entry = roster[i];
+            const Color dim_fill{255, 255, 255, 30};
+            const Color ink{246, 241, 235, 255};
             if (!entry.present) {
                 row.name->set_text("Waiting for a player...");
                 row.name->set_color(color::TextDim);
-                row.role->set_text("");
-                row.device->set_text("");
+                row.role.tag->set_display(recompui::Display::None);
+                row.device->set_text(hosting && i > 0 ? "Send them your join code" : "");
                 row.ping->set_text("");
-                row.status->set_text("");
-                row.pad.box->set_display(recompui::Display::None);
+                row.status.tag->set_display(recompui::Display::None);
+                row.view->show_idle();
+                row.view->set_opacity(0.35f);
+                row.box->set_opacity(0.8f);
                 continue;
             }
             in++;
             // A host is ready by starting the game, so it counts as ready.
             const bool is_ready = entry.ready || i == 0;
             ready_count += is_ready ? 1 : 0;
+            row.box->set_opacity(1.0f);
+            row.view->set_opacity(1.0f);
             row.name->set_text(entry.name);
             row.name->set_color(color::Text);
             const bool own_row = i == own_port;
-            row.role->set_text(i == 0 ? (own_row ? "Host, you" : "Host") : (own_row ? "You" : ""));
+            const std::string role = i == 0 ? (own_row ? "HOST - YOU" : "HOST") : (own_row ? "YOU" : "");
+            row.role.tag->set_display(role.empty() ? recompui::Display::None : recompui::Display::Flex);
+            row.role.label->set_text(role);
             if (entry.controller == 0) {
                 row.device->set_text(own_row ? "No controller (keyboard only)" : "No controller");
-                row.device->set_color(own_row ? color::Warning : color::TextDim);
+                if (own_row) {
+                    row.device->set_color(Color{255, 196, 96, 255});
+                }
+                else {
+                    row.device->set_color(color::TextDim);
+                }
             }
             else {
                 row.device->set_text(controller_name(entry.controller));
@@ -457,14 +465,16 @@ namespace conker::netplay_lobby {
                 row.ping->set_text(ping);
                 row.ping->set_color(ping_color(entry.ping_ms));
             }
-            row.status->set_text(is_ready ? "Ready" : "Not ready");
-            row.status->set_color(is_ready ? color::Success : color::TextDim);
+            row.status.tag->set_display(recompui::Display::Flex);
+            row.status.label->set_text(is_ready ? "READY" : "NOT READY");
+            row.status.label->set_color(is_ready ? Color{16, 12, 20, 255} : ink);
+            row.status.tag->set_background_color(is_ready ? Color{96, 214, 128, 255} : dim_fill);
+            row.box->set_border_color(is_ready ? Color{96, 214, 128, 110} : Color{255, 255, 255, 26});
             if (entry.pad_seen) {
-                row.pad.box->set_display(recompui::Display::Flex);
-                show_pad(row.pad, entry.pad);
+                row.view->show(entry.pad);
             }
             else {
-                row.pad.box->set_display(recompui::Display::None);
+                row.view->show_idle();
             }
         }
         count_label->set_text(std::to_string(in) + " of " + std::to_string((int)roster.size()) + " players in, " +

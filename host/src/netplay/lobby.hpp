@@ -17,9 +17,16 @@
 #include "elements/ui_radio.h"
 #include "elements/ui_text_input.h"
 
+#include "controller_view.hpp"
 #include "net/packets.hpp"
 
 namespace conker::netplay_lobby {
+    // A small rounded tag with a label in it, which can be hidden or recoloured.
+    struct Pill {
+        recompui::Element* tag = nullptr;
+        recompui::Label* label = nullptr;
+    };
+
     class LobbyPanel : public recompui::Element {
     public:
         LobbyPanel(recompui::ResourceId rid, recompui::Element* parent);
@@ -42,37 +49,26 @@ namespace conker::netplay_lobby {
         std::string_view get_type_name() override { return "LobbyPanel"; }
 
     private:
-        static constexpr int pad_chips = 14;
-
-        // One player's live pad: a chip for each button, and the stick as a dot.
-        struct PadView {
-            recompui::Element* box = nullptr;
-            std::array<recompui::Element*, pad_chips> chip_boxes{};
-            std::array<recompui::Label*, pad_chips> chip_labels{};
-            recompui::Element* dot = nullptr;
-        };
-
         struct Row {
             recompui::Element* box = nullptr;
-            recompui::Element* bar = nullptr;
-            recompui::Label* slot = nullptr;
+            conker::netplay_view_pad::ControllerView* view = nullptr;
+            Pill slot;
             recompui::Label* name = nullptr;
-            recompui::Label* role = nullptr;
+            Pill role;
             recompui::Label* device = nullptr;
             recompui::Label* ping = nullptr;
-            recompui::Label* status = nullptr;
-            PadView pad;
+            Pill status;
         };
 
         // This player's name, Ready flag and controller go to lockstep a moment after they change, and at most a
         // few times a second: the host drops a joiner that sends its lobby more than 8 times in a second, which
         // a name typed quickly would otherwise do.
+        void refresh_codes();
         void send_own();
         void flush_own();
         // This player's own pad, read as the game would, sent to the others a few times a second.
         void update_own_pad();
         uint8_t own_controller() const;
-        void show_pad(PadView& view, const netplay::Pad& pad);
         void on_name_changed(const std::string& value);
         void on_ready_pressed();
         void on_start_pressed();
@@ -92,8 +88,16 @@ namespace conker::netplay_lobby {
         recompui::Button* ready_button = nullptr;
         recompui::Button* start_button = nullptr;
         recompui::Label* count_label = nullptr;
-        recompui::Label* code_label = nullptr;
+        recompui::Element* share_card = nullptr;
+        recompui::Label* code_caption = nullptr;
+        recompui::Label* code_big = nullptr;
+        recompui::Label* code_small = nullptr;
+        recompui::Label* room_status = nullptr;
         recompui::Button* code_copy = nullptr;
+        recompui::Button* long_copy = nullptr;
+        std::string room_status_text;
+        std::string shown_big;
+        std::string shown_long;
         recompui::Label* notice_label = nullptr;
         recompui::Label* delay_label = nullptr;
         recompui::Radio* delay_radio = nullptr;
@@ -104,9 +108,6 @@ namespace conker::netplay_lobby {
         recompui::Label* hint_label = nullptr;
         std::string join_code;
         std::string room_code;
-        recompui::Element* room_row = nullptr;
-        recompui::Label* room_label = nullptr;
-        recompui::Button* room_copy = nullptr;
         std::vector<Row> rows;
     };
 }

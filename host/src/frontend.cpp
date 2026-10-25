@@ -345,9 +345,11 @@ namespace {
         options->add_start_game_or_load_rom_option();
 #if defined(CONKER_NETPLAY)
         conker::netplay_menu::init(game.game_id, recomp::get_config_path() / game.stored_filename());
-        options->add_option("Netplay", conker::netplay_menu::open);
+        // The fork's reason to exist, so it carries the accent colour.
+        recompui::GameOption* online_option = options->add_option("Play online", conker::netplay_menu::open);
+        online_option->set_color(recompui::Color{255, 150, 64, 255});
 #endif
-        // The launcher is Start Game, Netplay, Controls, Controller Test, Graphics & Sound, Add ROM and Exit: no Version
+        // The launcher is Start Game, Play online, Controls, Controller Test, Graphics & Sound, Add ROM and Exit: no Version
         // switch (version_option stays null) and no Mods menu.
         options->add_setup_controls_option();
         options->add_option("Controller Test", conker::controller_test::open);
