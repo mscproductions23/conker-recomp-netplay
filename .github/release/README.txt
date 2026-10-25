@@ -23,12 +23,13 @@ a second and a half to leave it.
 Play online
   - Everyone must run the same version of this program. The handshake refuses a
     different build, ROM or settings profile (the lobby says which).
-  - The host opens Netplay, picks the number of players, the port and the address
-    friends will use (Tailscale and home-network addresses are filled in for you),
-    and presses Host. Everyone then meets in a lobby.
+  - The host opens Play online, picks the number of players and the address friends
+    will use (Tailscale and home-network addresses are filled in for you), and
+    presses "Host a room". Everyone then meets in a lobby. The same page draws your
+    own controller live, so you can test it first; "More options" has the port.
   - Friends join with the host's join code (paste it, or it is filled in from the
     clipboard). If someone runs a room server, its address goes under "Room server"
-    on the Netplay page, the host also gets a short code such as K7Q-F2M, and friends
+    on the Play online page ("More options"), the host also gets a short code such as K7Q-F2M, and friends
     can type that instead. A Tailscale address works without opening any ports; the
     program also asks the router to forward the port (UPnP) and says when it can't.
   - In the lobby each player sees the others' names, controller types, ping and a
