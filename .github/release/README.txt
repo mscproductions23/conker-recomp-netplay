@@ -11,16 +11,16 @@ Playing
   2. The first time, the first launcher option is Load ROM: pick your US .z64 ROM.
      It's checked, and remembered for later runs. It then reads Start Game.
   3. Start Game for the single-player game and the game's own multiplayer, or
-     Netplay to play online.
+     Play online to play with friends.
 
-The launcher has Start Game, Netplay, Controls, Controller Test, Graphics & Sound,
+The launcher has Start Game, Play online, Controls, Controller Test, Graphics & Sound,
 Add ROM (for ROM hacks that only change the game's assets) and Exit.
 
 The menus name the buttons for your controller (Xbox, PlayStation or Nintendo).
 Controller Test shows every button, stick and trigger live: hold Start or Esc for
 a second and a half to leave it.
 
-Netplay
+Play online
   - Everyone must run the same version of this program. The handshake refuses a
     different build, ROM or settings profile (the lobby says which).
   - The host opens Netplay, picks the number of players, the port and the address
