@@ -1,5 +1,10 @@
 // A netplay session over GameNetworkingSockets: see session.hpp.
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
 #include "session.hpp"
 #include "join_code.hpp"
 
@@ -148,7 +153,7 @@ namespace conker::netplay {
         // first min(s.size(), name_size) characters copied in
         std::array<char, name_size> to_array(const std::string& s) {
             std::array<char, name_size> arr = {};
-            size_t copy_size = std::min(s.size(), name_size);
+            size_t copy_size = (std::min)(s.size(), name_size);
             std::copy_n(s.data(), copy_size, arr.data());
             return arr;
         }

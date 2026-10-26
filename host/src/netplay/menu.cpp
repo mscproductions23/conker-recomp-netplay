@@ -11,6 +11,11 @@
 // local one, for a match at home). The code is the host's address, so the menu says to share it only with
 // people the host trusts. The input delay is lockstep's default, the same on every machine.
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
 #include <algorithm>
 #include <cctype>
 #include <cmath>
