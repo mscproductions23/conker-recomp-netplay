@@ -45,11 +45,11 @@ This is experimental. What has and hasn't been checked:
 - **Checked:** upstream's determinism check and its two-copy lockstep check pass on a Linux build of this
   fork (headless). The lobby, the scripted game modes and the room server were run with two copies of the
   game on one Linux machine (a host and a joiner met through the room server, and both ended up with the
-  same game memory as a solo replay of the same match). The Linux and macOS release builds carry the same
-  build id, from the same clean commit.
+  same game memory as a solo replay of the same match). The Linux, macOS and Windows release builds
+  (build 7) carry the same build id, from the same clean commit; the Windows one was built in GitHub's cloud.
 - **Not checked yet:** a real match between two machines on different networks; UPnP on a real router;
-  Tailscale Funnel from outside a tailnet; controllers in the lobby; the Windows build (the workflow exists
-  but has not been run for this version); the Windows and macOS builds of the room client.
+  Tailscale Funnel from outside a tailnet; controllers in the lobby; running the Windows build at all (it compiles
+  and has the right build id, but has not been launched); the Windows and macOS builds of the room client.
 - **Limits of netplay:** a host has to be reachable: the same Tailscale network, a forwarded UDP port (the
   game asks the router for it with UPnP, which not every router allows), or the room server's public
   address. There is no relay: if two players can't reach each other directly the match can't happen. A join
